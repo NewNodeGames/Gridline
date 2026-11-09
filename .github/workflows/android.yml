@@ -38,6 +38,7 @@ jobs:
             https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           python3 -m zipfile -e "$RUNNER_TEMP/cmdline-tools.zip" "$SDK_ROOT/cmdline-tools/"
           mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+          chmod +x "$SDK_ROOT/cmdline-tools/latest/bin/"*   # python3 -m zipfile drops exec bits
           SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           echo "sdk.dir=$SDK_ROOT" > packaging/android/local.properties
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
