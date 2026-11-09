@@ -1,4 +1,4 @@
-// Gridline — Android UI entry point (phase 1): SDL2 + OpenGL ES 3 + Dear ImGui.
+// Gridline — Android UI entry point (phase 2): SDL2 + OpenGL ES 3 + Dear ImGui, with engine audio.
 //
 // Boot flow: MainActivity (org.libsdl.app.SDLActivity subclass) loads libSDL2.so, then this
 // library (libmain.so), and runs the app on a dedicated native thread started by SDLActivity
@@ -6,9 +6,13 @@
 // SDL_HINT_TOUCH_MOUSE_EVENTS, so every mouse-driven ImGui control responds to a finger tap
 // or drag. The back button is not trapped: Android sends SDL_QUIT and the app exits cleanly.
 //
-// Phase-1 skeleton: one screen, live engine state (a gl::Song), no audio yet (AAudio is
-// phase 2). No processes, no file access, no network — this only proves the render + input
-// loop on a device.
+// Phase 2: the AudioEngine (the same realtime engine the desktop app drives) renders the
+// embedded demo song — "Gridline", all built-in instruments, no samples — through SDL's
+// Android audio backend (AAudio on API 26+, OpenSL ES otherwise) into AAudio; PLAY/STOP run
+// the transport in Song mode. RECORD_AUDIO is deliberately NOT declared yet: there is no
+// capture path in this skeleton, and an unused permission only invites Play review questions.
+// Output latency is reported as the negotiated buffer (SDL does not expose the device-side
+// AAudio latency). Audio focus and background/foreground lifecycle are phase 5.
 #include <SDL.h>
 
 #include <algorithm>
@@ -24,8 +28,19 @@
 
 #include "GridlineVersion.h"
 #include "core/Song.h"
+#include "core/Demo.h"
+#include "engine/AudioEngine.h"
+#include "engine/Program.h"
 
 namespace {
+
+// SDL float32 interleaved callback → the engine's own render. The desktop callback's crash
+// hooks are left out: the crash sentinel is disabled on Android (see packaging/android/README.md).
+void audioCallback(void* user, Uint8* stream, int len) {
+  auto* eng = static_cast<gl::AudioEngine*>(user);
+  const int frames = len / static_cast<int>(sizeof(float) * 2);
+  eng->processInterleaved(reinterpret_cast<float*>(stream), frames);
+}
 
 void drawGridBackground(const ImVec2& size) {
   ImDrawList* dl = ImGui::GetBackgroundDrawList();
@@ -98,10 +113,52 @@ int main(int /* argc */, char** /* argv */) {
   ImGui_ImplSDL2_InitForOpenGL(window, gl);
   ImGui_ImplOpenGL3_Init("#version 300 es");
 
-  // Live engine state — the point of the skeleton: the UI edits a real gl::Song.
-  gl::Song song = gl::makeEmptySong();
+  // ---- phase 2: the engine and its Android audio device ----
+  // Live engine state — the demo song ("Gridline", embedded in gridline_core; all built-in
+  // instruments), so PLAY makes sound with nothing but the binary.
+  gl::Song song = gl::makeDemoTrack();
+  gl::AudioEngine engine(48000.0);
+  gl::ProgramBuilder builder;
+  char audioStatus[256] = "no audio device";
+  SDL_AudioDeviceID audioDevice = 0;
+
+  // Open the device first (paused) to learn the negotiated rate and buffer, then build the
+  // program for that rate — the same order the desktop app uses.
+  {
+    SDL_AudioSpec want{}, have{};
+    want.freq = 48000;
+    want.format = AUDIO_F32SYS;
+    want.channels = 2;
+    want.samples = 256;  // ask small; SDL negotiates
+    want.callback = audioCallback;
+    want.userdata = &engine;
+    audioDevice = SDL_OpenAudioDevice(nullptr, 0, &want, &have,
+                                      SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+    if (!audioDevice) {
+      std::snprintf(audioStatus, sizeof audioStatus, "no audio output: %s", SDL_GetError());
+      SDL_Log("SDL_OpenAudioDevice failed: %s", SDL_GetError());
+    } else {
+      engine.setSampleRate(static_cast<double>(have.freq));
+      builder.setSampleRate(engine.sampleRate());
+      builder.setAsyncSamples(true);  // renders land while the demo is built; no samples needed here
+      engine.setMode(gl::PlayMode::Song);  // play the playlist arrangement
+      engine.setProgram(builder.build(song));
+      const char* driver = SDL_GetCurrentAudioDriver();
+      std::snprintf(audioStatus, sizeof audioStatus, "%s · %d Hz · %d-frame buffer (%.1f ms)",
+                    driver ? driver : "audio", have.freq, have.samples,
+                    1000.0 * static_cast<double>(have.samples) / static_cast<double>(have.freq));
+      SDL_Log("audio device opened: %s", audioStatus);
+      SDL_PauseAudioDevice(audioDevice, 0);  // unpause; the engine stays silent until PLAY
+    }
+  }
+  const bool audioOk = audioDevice != 0;
+  auto rebuild = [&]() {  // tempo edit committed: rebuild; the engine continues from the current position
+    if (!audioOk) return;
+    engine.setProgram(builder.build(song));
+  };
+
   float tempoUi = static_cast<float>(song.tempo);
-  bool playing = false;
+  float tempoCommitted = tempoUi;
   bool running = true;
 
   while (running) {
@@ -120,6 +177,8 @@ int main(int /* argc */, char** /* argv */) {
 
     const ImVec4 accent{0.36f, 0.66f, 0.90f, 1.0f};
     const ImVec4 dim{0.60f, 0.60f, 0.62f, 1.0f};
+    const ImVec4 warn{0.91f, 0.52f, 0.36f, 1.0f};
+    const bool playing = engine.playing();
 
     // ---- central card ----
     const float cardW = std::min(display.x * 0.82f, 760.0f * scale);
@@ -135,29 +194,43 @@ int main(int /* argc */, char** /* argv */) {
     ImGui::PopStyleColor();
     ImGui::PushStyleColor(ImGuiCol_Text, dim);
     ImGui::TextUnformatted("the workstation built around the grid");
-    ImGui::TextUnformatted("android  ·  phase 1 skeleton");
+    ImGui::TextUnformatted("android  ·  phase 2 — engine audio");
     ImGui::PopStyleColor();
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
     ImGui::Text("gridline_core %s  ·  build %s", GRIDLINE_VERSION, GRIDLINE_BUILD_ID);
-    ImGui::Text("default project: %.1f BPM  ·  PPQ %d  ·  %d/%d", song.tempo, song.ppq, song.timeSigNum,
+    ImGui::Text("demo song: Gridline · %.1f BPM · PPQ %d · %d/%d", song.tempo, song.ppq, song.timeSigNum,
                 song.timeSigDen);
-    ImGui::Spacing();
-
-    // Transport row: Play/Stop toggle + a live tempo edit on the engine model.
-    ImGui::PushStyleColor(ImGuiCol_Button, playing ? accent : ImVec4(0.20f, 0.20f, 0.22f, 1.0f));
-    if (ImGui::Button(playing ? "STOP" : "PLAY", ImVec2(-1.0f, 56.0f))) playing = !playing;
+    ImGui::PushStyleColor(ImGuiCol_Text, audioOk ? dim : warn);
+    ImGui::TextUnformatted(audioStatus);
     ImGui::PopStyleColor();
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::SliderFloat("##tempo", &tempoUi, 60.0f, 220.0f, "Tempo %.1f BPM")) song.tempo = static_cast<double>(tempoUi);
     ImGui::Spacing();
 
-    if (ImGui::Button("Reset project", ImVec2(-1.0f, 0.0f))) {
-      song = gl::makeEmptySong();
+    // Transport row: PLAY/STOP runs the demo through SDL's AAudio/OpenSL ES path.
+    ImGui::PushStyleColor(ImGuiCol_Button, playing ? accent : ImVec4(0.20f, 0.20f, 0.22f, 1.0f));
+    if (ImGui::Button(playing ? "STOP" : "PLAY", ImVec2(-1.0f, 56.0f))) engine.togglePlay();
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
+
+    // Tempo: edited live in the slider, committed to the engine on release (a tempo change is
+    // a new tempo map; the audio thread keeps its position).
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::SliderFloat("##tempo", &tempoUi, 60.0f, 220.0f, "Tempo %.1f BPM");
+    if (ImGui::IsItemDeactivatedAfterEdit() && tempoCommitted != tempoUi) {
+      tempoCommitted = tempoUi;
+      song.tempo = static_cast<double>(tempoUi);
+      rebuild();
+    }
+    ImGui::Spacing();
+
+    if (ImGui::Button("Reset song", ImVec2(-1.0f, 0.0f))) {
+      engine.stopToStart();
+      song = gl::makeDemoTrack();
       tempoUi = static_cast<float>(song.tempo);
-      playing = false;
+      tempoCommitted = tempoUi;
+      rebuild();
     }
     ImGui::Spacing();
     if (ImGui::Button("Quit", ImVec2(-1.0f, 44.0f))) running = false;
@@ -181,6 +254,11 @@ int main(int /* argc */, char** /* argv */) {
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     SDL_GL_SwapWindow(window);
+  }
+
+  if (audioDevice) {
+    SDL_PauseAudioDevice(audioDevice, 1);
+    SDL_CloseAudioDevice(audioDevice);
   }
 
   ImGui_ImplOpenGL3_Shutdown();

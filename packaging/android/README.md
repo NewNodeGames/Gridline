@@ -1,9 +1,25 @@
 # Gridline for Android
 
-Status: **phase 1 — SDLActivity skeleton with an OpenGL ES 3 / Dear ImGui shell** (a live
-engine-driven screen; no DAW views and no audio yet). The app boots SDL2, creates an ES 3
-context and renders ImGui frames; touch works as a mouse. Verified on a real tablet by the
-project owner (debug APK built by CI, sideloaded). Phase 0 (below) is done.
+Status: **phase 2 — table stakes audio** (SDL2's Android audio backend drives the real
+`AudioEngine`: PLAY/STOP plays the embedded demo song). The app boots SDL2, creates an ES 3
+context, renders ImGui frames and opens an AAudio-or-OpenSL-ES output device. Touch works as
+a mouse. Phase 1 is verified on a real tablet by the project owner (debug APK built by CI).
+Phase 0 (below) is done.
+
+What phase 2 added on top of phase 1:
+
+- The realtime `AudioEngine` (the same one the desktop app links) renders `gl::makeDemoTrack()` —
+  the embedded demo song "Gridline" (174 BPM liquid drum & bass; all built-in instruments, no
+  samples) — in Song mode through `SDL_OpenAudioDevice(...)` with `SDL_AUDIODRIVERS` = AAudio
+  (API 26+) or OpenSL ES. PLAY/STOP run the transport; the status line shows the negotiated
+  driver, rate and buffer (the SDL buffer is the only latency component SDL reports — the
+  device-side AAudio latency is not exposed).
+- Tempo is edited in the slider and **committed on release** (`IsItemDeactivatedAfterEdit`):
+  a tempo change is a new tempo map in a rebuilt program; the audio thread keeps its position.
+- No `RECORD_AUDIO` in the manifest: the output path needs no permission, and declaring one
+  nothing uses only invites Play review questions. It arrives with the capture path.
+- Reset reloads the demo song and rebuilds the program. Audio focus and
+  background/foreground lifecycle remain phase 5.
 
 What phase 1 added: the phase-0 plain `Activity` + JNI probe was replaced by
 `MainActivity : SDLActivity`. `libmain.so` (this is Gridline's process) links SDL2,
@@ -44,7 +60,7 @@ packaging/android/
 │       ├── java/com/lolitemaultes/gridline/MainActivity.java   extends SDLActivity (no overrides)
 │       ├── java/org/libsdl/app/                                vendored SDL 2.30.9 Android bindings (see README.gridline.md)
 │       ├── cpp/CMakeLists.txt       FetchContent SDL2 + add_subdirectory of the repo root + imgui ES 3
-│       ├── cpp/android_main.cpp     the phase-1 screen (grid + card + transport row)
+│       ├── cpp/android_main.cpp     the phase-2 screen (grid + card + transport; engine audio)
 │       └── res/                     launcher icons from assets/icons/gridline-app-*.png
 ```
 
@@ -65,6 +81,12 @@ Release) and `x86_64`. ELF LOAD segments are **16 KB** for both (applied to the 
 libs, the wrapper's `main` module and the SDL2 module). The vendored SDL2 Java sources +
 `MainActivity` compile against `android-35`, and the manifest/resources pass `aapt2 link`
 (package, targetSdk 35, launchable activity, `glEsVersion 0x00030000`).
+
+**Phase 2** — the engine is now built into the app: `gl::AudioEngine` + `ProgramBuilder`
+(both inside `gridline_core`) render the embedded demo song through SDL's Android audio
+backend; `android_main.cpp` opens the output device (F32 stereo, 48 kHz requested, buffer
+negotiated), and PLAY/STOP drive the transport in Song mode. See the control list and the
+CI-built debug APK to hear it — it is **not yet device-verified** at the time of writing.
 
 - **On a device** — the debug APK built by CI (`:app:assembleDebug`, artifact
   `gridline-android-debug`) was sideloaded and confirmed working on a tablet (2026-11-09): the
@@ -103,18 +125,22 @@ set, so `.so` files ship uncompressed and 16 KB aligned.
 | Phase | Content | Notes |
 |-------|---------|-------|
 | 0 (done) | Gradle skeleton, NDK cross-compile of `gridline_core`, JNI smoke test, CI stub | APK assembles |
-| 1 | `SDLActivity` + OpenGL ES 3 + Dear ImGui (`imgui_impl_opengl3`, GLSL ES 300), single live screen driven by a `gl::Song` | touch-as-mouse; no detached windows. Engine + SDL compile for arm64-v8a and x86_64 |
-| 2 | Audio: SDL2's Android backend (AAudio/OpenSL ES) driving the existing audio callback; `RECORD_AUDIO` permission; latency measurement | reuse Desktop audio path in `src/app/main.cpp`, minus X11/Wayland |
+| 1 | `SDLActivity` + OpenGL ES 3 + Dear ImGui (`imgui_impl_opengl3`, GLSL ES 300), single live screen driven by a `gl::Song` | done — verified on a tablet (debug APK from CI) |
+| 2 | Audio: SDL2's Android backend (AAudio/OpenSL ES) driving `AudioEngine::processInterleaved` from the SDL callback; embedded demo song plays in Song mode; buffer-based latency readout | output path works; **`RECORD_AUDIO` deferred** until a capture path exists; device re-check pending |
 | 3 | Load/save projects via the Storage Access Framework; bundle `assets/` (sounds) in the APK or download on first run | file interop |
 | 4 | Tablet-first UI pass: channel rack, piano roll, playlist, mixer with finger-sized targets | the big one |
 | 5 | MIDI via AMidi; background/foreground lifecycle, audio focus, process death | |
 | later | Collaboration in the field (libjuice over Android networks), Play Store packaging | keep `GRIDLINE_COLLAB=ON` |
 
-## Controls (phase 1)
+## Controls (phase 2)
 
 Tap/drag = mouse (via `SDL_TOUCH_MOUSE_EVENTS`). The **Back** button is not trapped — it quits
-the app, like a plain back press. The tempo slider edits the engine's default project live;
-**Reset project** recreates it; **PLAY/STOP** toggles the (silent) transport; **Quit** exits.
+the app, like a plain back press. **PLAY/STOP** starts/stops the demo song ("Gridline") through
+the tablet's speakers or headphones. The tempo slider edits the tempo **on release** (a tempo
+change is a new tempo map). **Reset song** stops the transport and reloads the demo. **Quit**
+exits. The status line under the version names the driver (`aaudio` or `openslES`), the
+negotiated rate and buffer — that buffer is the only latency figure SDL reports; AAudio's
+device-side latency is not exposed to apps.
 
 ## CI
 

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Phase 1 skeleton: no permissions. RECORD_AUDIO arrives with the AAudio backend (phase 2). -->
+    <!-- No permissions. Output audio needs none; RECORD_AUDIO arrives with the (unimplemented) capture path. -->
 
     <!-- OpenGL ES 3.0 is required: the UI is rendered with an ES 3 context. -->
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
