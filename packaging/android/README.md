@@ -2,7 +2,8 @@
 
 Status: **phase 1 — SDLActivity skeleton with an OpenGL ES 3 / Dear ImGui shell** (a live
 engine-driven screen; no DAW views and no audio yet). The app boots SDL2, creates an ES 3
-context and renders ImGui frames; touch works as a mouse. Phase 0 (below) is done.
+context and renders ImGui frames; touch works as a mouse. Verified on a real tablet by the
+project owner (debug APK built by CI, sideloaded). Phase 0 (below) is done.
 
 What phase 1 added: the phase-0 plain `Activity` + JNI probe was replaced by
 `MainActivity : SDLActivity`. `libmain.so` (this is Gridline's process) links SDL2,
@@ -65,9 +66,11 @@ libs, the wrapper's `main` module and the SDL2 module). The vendored SDL2 Java s
 `MainActivity` compile against `android-35`, and the manifest/resources pass `aapt2 link`
 (package, targetSdk 35, launchable activity, `glEsVersion 0x00030000`).
 
-- **Not yet run on a device/emulator** — rendering is verified by building, not by eye. On a
-  device: `gradle :app:assembleDebug && adb install -r .../app-debug.apk`, or Run in Android
-  Studio. CI assembles the APK on every relevant push.
+- **On a device** — the debug APK built by CI (`:app:assembleDebug`, artifact
+  `gridline-android-debug`) was sideloaded and confirmed working on a tablet (2026-11-09): the
+  screen renders and the controls respond; back button quits. The debug APK is large (~83 MB)
+  because the native libraries ship unstripped debug info; the release/Play packaging path
+  strips it at packaging time.
 - Local note: phase 1 was built on a 2 GB sandbox where the kernel OOM-kills the `-g`
   (RelWithDebInfo) native build; both ABIs are built in CI (16 GB runners). A normal desktop
   (8 GB+ or Android Studio) builds both without issue.
