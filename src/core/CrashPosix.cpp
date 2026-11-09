@@ -598,6 +598,14 @@ int64_t unixTime() noexcept {
 }
 
 void spawnSentinel(const std::string& self, const std::string& sessionFile, const std::string& testDir) {
+#if defined(__ANDROID__)
+  // An APK has no separate sentinel binary to re-exec; crash reporting degrades to writing
+  // the report file without the sentinel process that normally finalises it.
+  (void)self;
+  (void)sessionFile;
+  (void)testDir;
+  return;
+#else
   int link[2];
   if (::pipe(link) != 0) return;
   ::fcntl(link[1], F_SETFD, FD_CLOEXEC);  // only this process holds the end the sentinel watches
@@ -622,6 +630,7 @@ void spawnSentinel(const std::string& self, const std::string& sessionFile, cons
     return;
   }
   gSentinelLink = link[1];
+#endif
 }
 
 void closeSentinelLink() {
@@ -662,6 +671,14 @@ bool alive(int64_t pid) {
 }
 
 bool spawnDetached(const std::string& exe, const std::vector<std::string>& argsIn) {
+#if defined(__ANDROID__)
+  // bionic has posix_spawn only from API 28 (minSdk is 26), and an APK ships no external
+  // helper binaries to spawn anyway: restarting the app after a crash is the Android system's
+  // business, not ours. Fail cleanly so the caller falls back instead of crashing again.
+  (void)exe;
+  (void)argsIn;
+  return false;
+#else
   std::vector<std::string> args;
   args.push_back(exe);
   args.insert(args.end(), argsIn.begin(), argsIn.end());
@@ -677,6 +694,7 @@ bool spawnDetached(const std::string& exe, const std::vector<std::string>& argsI
   const int rc = posix_spawn(&pid, exe.c_str(), &fa, nullptr, argv.data(), environ);
   posix_spawn_file_actions_destroy(&fa);
   return rc == 0;
+#endif
 }
 
 std::string selfPath() {

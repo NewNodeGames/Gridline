@@ -348,6 +348,7 @@ Samples a Gridline Suite plugin uses travel inside its settings, up to 64 MB of 
 - [Opening files from the file manager](docs/opening-files.md): double-clicking projects and tracker modules on Linux, macOS and Windows, and choosing Gridline once where the system asks.
 - [Gridline on Debian and Ubuntu](docs/debian.md): installing the `.deb` with apt, the supported versions, Debian 11's archived updates.
 - [Gridline on a Chromebook](docs/chromeos.md): installing in ChromeOS's Linux environment, sound, shared folders, MIDI devices and plugins.
+- [Gridline on Android (experimental)](docs/android.md): the engine cross-compiles for Android (NDK) as `gridline_core`; see [packaging/android/](packaging/android/README.md) for the phase plan and build instructions.
 - [ASIO on Windows](docs/asio.md): using an audio interface's ASIO driver, its buffer sizes, sample rates, inputs and outputs.
 - [Lua scripting](docs/scripting.md), [AI assistants (MCP)](docs/mcp.md) and [the update check](docs/updates.md).
 - [CHANGELOG.md](CHANGELOG.md) lists what changed in each version.

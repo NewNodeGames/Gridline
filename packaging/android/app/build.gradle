@@ -1,0 +1,46 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Keep in sync with project(gridline VERSION ...) in the top-level CMakeLists.txt.
+def gridlineVersion = '0.7.4'
+
+android {
+    namespace 'com.lolitemaultes.gridline'
+    compileSdk 35
+    ndkVersion '27.2.12479018'   // r27c; matches packaging/android builds and CI
+
+    defaultConfig {
+        applicationId 'com.lolitemaultes.gridline'
+        minSdk 28        // Android 9+: bionic posix_spawn (Process::start), AAudio, 64-bit only in practice.
+        // (Android 8 is API 26; raising to 28 covers 95%+ of devices and avoids an exec shim)
+        targetSdk 35
+        versionCode 2
+        versionName gridlineVersion
+        ndk {
+            // arm64-v8a: devices. x86_64: emulator on x86_64 hosts.
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            // Builds libmain.so: Gridline's Android entry point (SDL2 + OpenGL ES 3 +
+            // Dear ImGui) linking gridline_core. The root CMakeLists.txt detects
+            // CMAKE_SYSTEM_NAME=Android itself and compiles the engine only.
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    buildTypes {
+        debug   { debuggable true }
+        release { minifyEnabled false }   // shrinkResources/minify once there is a release track
+    }
+}
+
+// The vendored SDL Java sources carry UTF-8 in comments; keep compilation
+// reproducible on non-UTF-8 default locales (e.g. Windows shells).
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}

@@ -16,6 +16,24 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
+# ---- Android (packaging/android/) ----
+# Cross-compiling with the NDK (CMAKE_SYSTEM_NAME=Android) builds the core engine only:
+# no desktop application, CLI, plugins, tests or CPack. The APK wires the core up in
+# packaging/android/app/src/main/cpp. Desktop builds are unaffected.
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+  set(GRIDLINE_ANDROID TRUE)
+  # Google Play requires 16 KB page-aligned native libraries on ARM64 (Android 15+).
+  add_link_options(-Wl,-z,max-page-size=16384)
+else()
+  set(GRIDLINE_ANDROID FALSE)
+endif()
+
+# Root and binary dirs that are correct both for a top-level build and for add_subdirectory
+# (the Android APK builds core via packaging/android/app/src/main/cpp).
+get_filename_component(GRIDLINE_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
+# CMAKE_CURRENT_BINARY_DIR == CMAKE_BINARY_DIR for a top-level build, and the subdirectory
+# build dir for add_subdirectory (the APK puts it under the APK's .cxx tree).
+set(GRIDLINE_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 
 # ---- compilers and platforms ----
 # Warning sets: GL_WARN (strict: -Wall -Wextra -Wpedantic), GL_WARN_LOOSE (no -Wpedantic; the
@@ -182,8 +200,8 @@ target_compile_options(gridline_lua PRIVATE ${GL_NOWARN})
 set_target_properties(gridline_lua PROPERTIES POSITION_INDEPENDENT_CODE ON LINKER_LANGUAGE CXX)
 # SC-07: the MCP server serves docs/scripting.md as a resource; it is compiled
 # in (regenerated when the document changes).
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/scripting.md)
-file(READ ${CMAKE_SOURCE_DIR}/docs/scripting.md GRIDLINE_SCRIPTING_DOC_RAW)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${GRIDLINE_ROOT_DIR}/docs/scripting.md)
+file(READ ${GRIDLINE_ROOT_DIR}/docs/scripting.md GRIDLINE_SCRIPTING_DOC_RAW)
 # Adjacent raw-string pieces of at most 8000 bytes: MSVC limits a single literal piece to 16 KB.
 string(LENGTH "${GRIDLINE_SCRIPTING_DOC_RAW}" _docLen)
 set(GRIDLINE_SCRIPTING_DOC "")
@@ -193,20 +211,20 @@ while(_docPos LESS _docLen)
   string(APPEND GRIDLINE_SCRIPTING_DOC "R\"GLDOC(${_docPiece})GLDOC\"\n      ")
   math(EXPR _docPos "${_docPos} + 8000")
 endwhile()
-file(WRITE ${CMAKE_BINARY_DIR}/generated/McpDocs.cpp.in
+file(WRITE ${GRIDLINE_BUILD_DIR}/generated/McpDocs.cpp.in
      "// Generated from docs/scripting.md by CMakeLists.txt (SC-07). Do not edit.\nnamespace gl::mcp {\nconst char* scriptingReferenceText() {\n  return @GRIDLINE_SCRIPTING_DOC@;\n}\n}  // namespace gl::mcp\n")
-configure_file(${CMAKE_BINARY_DIR}/generated/McpDocs.cpp.in ${CMAKE_BINARY_DIR}/generated/McpDocs.cpp @ONLY)
+configure_file(${GRIDLINE_BUILD_DIR}/generated/McpDocs.cpp.in ${GRIDLINE_BUILD_DIR}/generated/McpDocs.cpp @ONLY)
 if(NOT MSVC)
-  set_source_files_properties(${CMAKE_BINARY_DIR}/generated/McpDocs.cpp PROPERTIES COMPILE_OPTIONS "-Wno-overlength-strings")
+  set_source_files_properties(${GRIDLINE_BUILD_DIR}/generated/McpDocs.cpp PROPERTIES COMPILE_OPTIONS "-Wno-overlength-strings")
 endif()
-list(APPEND GRIDLINE_CORE_SRC ${CMAKE_BINARY_DIR}/generated/McpDocs.cpp)
+list(APPEND GRIDLINE_CORE_SRC ${GRIDLINE_BUILD_DIR}/generated/McpDocs.cpp)
 # J-135: the demo song "Gridline" (assets/demo/Gridline.gridline.json, made by tools/make_demo_song.py)
 # is compiled in as bytes, so every program and package opens it without looking for files.
-set(GRIDLINE_DEMO_JSON ${CMAKE_SOURCE_DIR}/assets/demo/Gridline.gridline.json)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${GRIDLINE_DEMO_JSON} ${CMAKE_SOURCE_DIR}/cmake/EmbedDemo.cmake)
-include(${CMAKE_SOURCE_DIR}/cmake/EmbedDemo.cmake)
-gridline_embed_demo(${GRIDLINE_DEMO_JSON} ${CMAKE_BINARY_DIR}/generated/DemoSongData.cpp)
-list(APPEND GRIDLINE_CORE_SRC ${CMAKE_BINARY_DIR}/generated/DemoSongData.cpp)
+set(GRIDLINE_DEMO_JSON ${GRIDLINE_ROOT_DIR}/assets/demo/Gridline.gridline.json)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${GRIDLINE_DEMO_JSON} ${GRIDLINE_ROOT_DIR}/cmake/EmbedDemo.cmake)
+include(${GRIDLINE_ROOT_DIR}/cmake/EmbedDemo.cmake)
+gridline_embed_demo(${GRIDLINE_DEMO_JSON} ${GRIDLINE_BUILD_DIR}/generated/DemoSongData.cpp)
+list(APPEND GRIDLINE_CORE_SRC ${GRIDLINE_BUILD_DIR}/generated/DemoSongData.cpp)
 # ---- J-111: collaborative projects (src/collab) ----
 # The replicated document, op log, profiles and the protocol are plain C++ in the core library.
 # Networking: libjuice 1.7.4 (MPL-2.0, ICE / STUN / TURN, vendored unmodified), libplum 0.6.0
@@ -290,7 +308,7 @@ set_target_properties(gridline_core PROPERTIES POSITION_INDEPENDENT_CODE ON)  # 
 target_include_directories(gridline_core PUBLIC src)
 # J-111: build id = the commit (collaborators must run the same build); GRIDLINE_BUILD_ID overrides it.
 if(NOT GRIDLINE_BUILD_ID)
-  execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR}
                   OUTPUT_VARIABLE GRIDLINE_BUILD_ID OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _glGitRes)
   if(NOT _glGitRes EQUAL 0 OR NOT GRIDLINE_BUILD_ID)
     # K-1: a source archive (no .git) has the commit in cmake/build-id.txt (export-subst).
@@ -302,8 +320,8 @@ if(NOT GRIDLINE_BUILD_ID)
     endif()
   endif()
 endif()
-configure_file(cmake/Version.h.in ${CMAKE_BINARY_DIR}/generated/GridlineVersion.h @ONLY)
-target_include_directories(gridline_core PUBLIC ${CMAKE_BINARY_DIR}/generated)
+configure_file(cmake/Version.h.in ${GRIDLINE_BUILD_DIR}/generated/GridlineVersion.h @ONLY)
+target_include_directories(gridline_core PUBLIC ${GRIDLINE_BUILD_DIR}/generated)
 target_include_directories(gridline_core SYSTEM PUBLIC third_party)
 # CLAP interface headers (MIT, vendored unmodified; see third_party/clap/LICENSE).
 target_include_directories(gridline_core SYSTEM PUBLIC third_party/clap/include)
@@ -332,6 +350,7 @@ if(GRIDLINE_COLLAB)
   target_compile_definitions(gridline_core PUBLIC GRIDLINE_COLLAB_NET=1)
 endif()
 
+if(NOT GRIDLINE_ANDROID)  # CLI and desktop tests (no executables on Android; see packaging/android/)
 add_executable(gridline src/cli/main.cpp src/cli/Bench.cpp src/cli/FlpTools.cpp src/cli/McpCli.cpp src/cli/CollabCli.cpp src/cli/SuiteCli.cpp
                src/cli/StemsCli.cpp)
 target_link_libraries(gridline PRIVATE gridline_core)
@@ -348,10 +367,10 @@ target_link_libraries(gridline_tests_menus PRIVATE gridline_core)
 target_compile_options(gridline_tests_menus PRIVATE ${GL_WARN})
 
 enable_testing()
-add_test(NAME engine COMMAND gridline_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-add_test(NAME m1_foundations COMMAND gridline_tests_m1 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-add_test(NAME plugin_parity COMMAND gridline_tests_parity WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-add_test(NAME menus COMMAND gridline_tests_menus WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME engine COMMAND gridline_tests WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
+add_test(NAME m1_foundations COMMAND gridline_tests_m1 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
+add_test(NAME plugin_parity COMMAND gridline_tests_parity WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
+add_test(NAME menus COMMAND gridline_tests_menus WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_command_palette tests/test_command_palette.cpp)  # K-93
 target_link_libraries(gridline_tests_command_palette PRIVATE gridline_core)
 target_include_directories(gridline_tests_command_palette PRIVATE src tests)
@@ -360,306 +379,306 @@ add_executable(gridline_tests_layout_presets tests/test_layout_presets.cpp)  # K
 target_link_libraries(gridline_tests_layout_presets PRIVATE gridline_core)
 target_include_directories(gridline_tests_layout_presets PRIVATE src tests)
 target_compile_options(gridline_tests_layout_presets PRIVATE ${GL_WARN})
-add_test(NAME k79_layout_presets COMMAND gridline_tests_layout_presets WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-add_test(NAME k93_command_palette COMMAND gridline_tests_command_palette WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k79_layout_presets COMMAND gridline_tests_layout_presets WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
+add_test(NAME k93_command_palette COMMAND gridline_tests_command_palette WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-1: the distribution channel files (packaging/: Flatpak, AUR, Homebrew, Windows package
 # managers, FreeBSD port, COPR, Snap) render for this version and agree with the tree.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
-  add_test(NAME packaging_manifests COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/packaging/check.py
-           WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME packaging_manifests COMMAND ${Python3_EXECUTABLE} ${GRIDLINE_ROOT_DIR}/packaging/check.py
+           WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 endif()
 # J-141: welcome launcher logic (start-up plan, state machine, recents, sketches + cache, layout audit).
 add_executable(gridline_tests_launcher tests/test_launcher.cpp)
 target_link_libraries(gridline_tests_launcher PRIVATE gridline_core)
 target_include_directories(gridline_tests_launcher PRIVATE src tests)
 target_compile_options(gridline_tests_launcher PRIVATE ${GL_WARN})
-add_test(NAME j141_launcher COMMAND gridline_tests_launcher WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j141_launcher COMMAND gridline_tests_launcher WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-147: plugin manager logic (one row per plugin across formats, categories, preferred format).
 add_executable(gridline_tests_plugin_groups tests/test_plugin_groups.cpp)
 target_link_libraries(gridline_tests_plugin_groups PRIVATE gridline_core)
 target_include_directories(gridline_tests_plugin_groups PRIVATE src tests)
 target_compile_options(gridline_tests_plugin_groups PRIVATE ${GL_WARN})
-add_test(NAME j147_plugin_groups COMMAND gridline_tests_plugin_groups WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j147_plugin_groups COMMAND gridline_tests_plugin_groups WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-78: a project's third-party plugin opens in another installed format (matcher, state wrappings, projects).
 add_executable(gridline_tests_cross_format tests/test_cross_format.cpp)
 target_link_libraries(gridline_tests_cross_format PRIVATE gridline_core)
 target_include_directories(gridline_tests_cross_format PRIVATE src tests)
 target_compile_options(gridline_tests_cross_format PRIVATE ${GL_WARN})
-add_test(NAME k78_cross_format COMMAND gridline_tests_cross_format WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k78_cross_format COMMAND gridline_tests_cross_format WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_editing_tools tests/test_editing_tools.cpp)
 target_link_libraries(gridline_tests_editing_tools PRIVATE gridline_core)
 target_compile_options(gridline_tests_editing_tools PRIVATE ${GL_WARN})
-add_test(NAME editing_tools COMMAND gridline_tests_editing_tools WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME editing_tools COMMAND gridline_tests_editing_tools WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_timeline tests/test_timeline.cpp)
 target_link_libraries(gridline_tests_timeline PRIVATE gridline_core)
-add_test(NAME timeline COMMAND gridline_tests_timeline WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME timeline COMMAND gridline_tests_timeline WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_playlist_view tests/test_playlist_view.cpp)
 target_link_libraries(gridline_tests_playlist_view PRIVATE gridline_core)
 target_compile_options(gridline_tests_playlist_view PRIVATE ${GL_WARN})
-add_test(NAME playlist_view COMMAND gridline_tests_playlist_view WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME playlist_view COMMAND gridline_tests_playlist_view WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_mixer_parity tests/test_mixer_parity.cpp)
 target_link_libraries(gridline_tests_mixer_parity PRIVATE gridline_core)
 target_compile_options(gridline_tests_mixer_parity PRIVATE ${GL_WARN})
-add_test(NAME mixer_parity COMMAND gridline_tests_mixer_parity WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME mixer_parity COMMAND gridline_tests_mixer_parity WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_edison tests/test_edison.cpp)
 target_link_libraries(gridline_tests_edison PRIVATE gridline_core)
 target_compile_options(gridline_tests_edison PRIVATE ${GL_WARN})
-add_test(NAME edison COMMAND gridline_tests_edison WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME edison COMMAND gridline_tests_edison WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-191: stem splitter (tiny deterministic model, no real weights)
 add_executable(gridline_tests_stems tests/test_stems.cpp)
 target_link_libraries(gridline_tests_stems PRIVATE gridline_core)
 target_compile_options(gridline_tests_stems PRIVATE ${GL_WARN})
-add_test(NAME stems COMMAND gridline_tests_stems WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME stems COMMAND gridline_tests_stems WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_test(NAME j191_stems_cli
          COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:gridline> -DTESTBIN=$<TARGET_FILE:gridline_tests_stems>
-                 -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${CMAKE_BINARY_DIR}/j191_stems_cli -P ${CMAKE_SOURCE_DIR}/tests/j191_stems_cli.cmake
-         WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                 -DSRC=${GRIDLINE_ROOT_DIR} -DOUT=${GRIDLINE_BUILD_DIR}/j191_stems_cli -P ${GRIDLINE_ROOT_DIR}/tests/j191_stems_cli.cmake
+         WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(j191_stems_cli PROPERTIES TIMEOUT 300)
 add_executable(gridline_tests_midi_workflow tests/test_midi_workflow.cpp)
 target_link_libraries(gridline_tests_midi_workflow PRIVATE gridline_core)
 target_compile_options(gridline_tests_midi_workflow PRIVATE ${GL_WARN})
-add_test(NAME midi_workflow COMMAND gridline_tests_midi_workflow WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME midi_workflow COMMAND gridline_tests_midi_workflow WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_pdc tests/test_pdc.cpp)
 target_link_libraries(gridline_tests_pdc PRIVATE gridline_core)
 target_compile_options(gridline_tests_pdc PRIVATE ${GL_WARN})
-add_test(NAME pdc COMMAND gridline_tests_pdc WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME pdc COMMAND gridline_tests_pdc WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_video_driver tests/test_video_driver.cpp)
 target_compile_options(gridline_tests_video_driver PRIVATE ${GL_WARN})
 add_test(NAME video_driver COMMAND gridline_tests_video_driver)
 add_executable(gridline_tests_program_retire tests/test_program_retire.cpp)
 target_link_libraries(gridline_tests_program_retire PRIVATE gridline_core)
 target_compile_options(gridline_tests_program_retire PRIVATE ${GL_WARN})
-add_test(NAME program_retire COMMAND gridline_tests_program_retire WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME program_retire COMMAND gridline_tests_program_retire WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 set_tests_properties(program_retire PROPERTIES TIMEOUT 300)
 add_executable(gridline_tests_automation_edit tests/test_automation_edit.cpp)
 target_link_libraries(gridline_tests_automation_edit PRIVATE gridline_core)
 target_compile_options(gridline_tests_automation_edit PRIVATE ${GL_WARN})
-add_test(NAME automation_edit COMMAND gridline_tests_automation_edit WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME automation_edit COMMAND gridline_tests_automation_edit WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_j2 tests/test_j2.cpp)
 target_link_libraries(gridline_tests_j2 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j2 PRIVATE tests)
 target_compile_options(gridline_tests_j2 PRIVATE ${GL_WARN})
-add_test(NAME j2_instruments COMMAND gridline_tests_j2 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j2_instruments COMMAND gridline_tests_j2 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-32: level laws (Matrix FM pluck / waveshaper), Maximus decode, live-mode offline render.
 add_executable(gridline_tests_j32 tests/test_j32.cpp)
 target_link_libraries(gridline_tests_j32 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j32 PRIVATE tests)
 target_compile_options(gridline_tests_j32 PRIVATE ${GL_WARN})
-add_test(NAME j32_levels COMMAND gridline_tests_j32 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j32_levels COMMAND gridline_tests_j32 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-48: interface sounds (loader, real-time mix without allocation, muting rules, settings).
 add_executable(gridline_tests_ui_sounds tests/test_ui_sounds.cpp)
 target_link_libraries(gridline_tests_ui_sounds PRIVATE gridline_core)
 target_include_directories(gridline_tests_ui_sounds PRIVATE tests)
 target_compile_options(gridline_tests_ui_sounds PRIVATE ${GL_WARN})
-add_test(NAME ui_sounds COMMAND gridline_tests_ui_sounds WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME ui_sounds COMMAND gridline_tests_ui_sounds WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 # J-67: smooth scrolling and elastic edges (scroll model).
 add_executable(gridline_tests_smooth_scroll tests/test_smooth_scroll.cpp)
 target_link_libraries(gridline_tests_smooth_scroll PRIVATE gridline_core)
 target_include_directories(gridline_tests_smooth_scroll PRIVATE tests)
 target_compile_options(gridline_tests_smooth_scroll PRIVATE ${GL_WARN})
-add_test(NAME smooth_scroll COMMAND gridline_tests_smooth_scroll WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME smooth_scroll COMMAND gridline_tests_smooth_scroll WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 # J-188: smooth zooming (zoom glide model, motion switch).
 add_executable(gridline_tests_smooth_zoom tests/test_smooth_zoom.cpp)
 target_link_libraries(gridline_tests_smooth_zoom PRIVATE gridline_core)
 target_include_directories(gridline_tests_smooth_zoom PRIVATE tests)
 target_compile_options(gridline_tests_smooth_zoom PRIVATE ${GL_WARN})
-add_test(NAME smooth_zoom COMMAND gridline_tests_smooth_zoom WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME smooth_zoom COMMAND gridline_tests_smooth_zoom WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 # J-99: smooth freehand drawing (stroke fill, one-euro filter, edge-preserving pass, undo grouping).
 add_executable(gridline_tests_draw_smooth tests/test_draw_smooth.cpp)
 target_link_libraries(gridline_tests_draw_smooth PRIVATE gridline_core)
 target_include_directories(gridline_tests_draw_smooth PRIVATE tests)
 target_compile_options(gridline_tests_draw_smooth PRIVATE ${GL_WARN})
-add_test(NAME draw_smooth COMMAND gridline_tests_draw_smooth WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME draw_smooth COMMAND gridline_tests_draw_smooth WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 # J-83: wheel routing over mixer controls (thin mixer scrolls, wide adjusts, momentum, setting).
 add_executable(gridline_tests_wheel_route tests/test_wheel_route.cpp)
 target_link_libraries(gridline_tests_wheel_route PRIVATE gridline_core)
 target_include_directories(gridline_tests_wheel_route PRIVATE tests)
 target_compile_options(gridline_tests_wheel_route PRIVATE ${GL_WARN})
-add_test(NAME wheel_route COMMAND gridline_tests_wheel_route WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME wheel_route COMMAND gridline_tests_wheel_route WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 # J-84: channel rack layout (knobs at every width / length, name truncation, step scroll) and rack wheel routing.
 add_executable(gridline_tests_rack_layout tests/test_rack_layout.cpp)
 target_link_libraries(gridline_tests_rack_layout PRIVATE gridline_core)
 target_include_directories(gridline_tests_rack_layout PRIVATE tests)
 target_compile_options(gridline_tests_rack_layout PRIVATE ${GL_WARN})
-add_test(NAME rack_layout COMMAND gridline_tests_rack_layout WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME rack_layout COMMAND gridline_tests_rack_layout WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_j1 tests/test_j1.cpp)
 target_link_libraries(gridline_tests_j1 PRIVATE gridline_core)
 target_compile_options(gridline_tests_j1 PRIVATE ${GL_WARN})
-add_test(NAME j1_effects COMMAND gridline_tests_j1 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j1_effects COMMAND gridline_tests_j1 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 # J-92: every built-in plugin parameter recorded as working still changes the output
 # (fast check against tests/param_audit_baseline.tsv; full sweep: gridline param-audit).
 add_executable(gridline_tests_plugin_param_audit tests/test_plugin_param_audit.cpp)
 target_link_libraries(gridline_tests_plugin_param_audit PRIVATE gridline_core)
 target_compile_options(gridline_tests_plugin_param_audit PRIVATE ${GL_WARN})
-add_test(NAME plugin_param_audit COMMAND gridline_tests_plugin_param_audit WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME plugin_param_audit COMMAND gridline_tests_plugin_param_audit WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 set_tests_properties(plugin_param_audit PROPERTIES TIMEOUT 900)
 add_executable(gridline_tests_bitcrush_range tests/test_bitcrush_range.cpp)
 target_link_libraries(gridline_tests_bitcrush_range PRIVATE gridline_core)
 target_compile_options(gridline_tests_bitcrush_range PRIVATE ${GL_WARN})
-add_test(NAME bitcrush_range COMMAND gridline_tests_bitcrush_range WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME bitcrush_range COMMAND gridline_tests_bitcrush_range WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 # J-136: one reset-or-type rule for the double-click of every parameter control.
 add_executable(gridline_tests_param_reset tests/test_param_reset.cpp)
 target_link_libraries(gridline_tests_param_reset PRIVATE gridline_core)
 target_include_directories(gridline_tests_param_reset PRIVATE tests)
 target_compile_options(gridline_tests_param_reset PRIVATE ${GL_WARN})
-add_test(NAME j136_param_reset COMMAND gridline_tests_param_reset WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j136_param_reset COMMAND gridline_tests_param_reset WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_j33 tests/test_j33.cpp)
 target_link_libraries(gridline_tests_j33 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j33 PRIVATE tests)
 target_compile_options(gridline_tests_j33 PRIVATE ${GL_WARN})
-add_test(NAME j33_instruments COMMAND gridline_tests_j33 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j33_instruments COMMAND gridline_tests_j33 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_j41 tests/test_j41.cpp)
 target_link_libraries(gridline_tests_j41 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j41 PRIVATE tests)
 target_compile_options(gridline_tests_j41 PRIVATE ${GL_WARN})
-add_test(NAME j41_articulators COMMAND gridline_tests_j41 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j41_articulators COMMAND gridline_tests_j41 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_j50 tests/test_j50.cpp)
 target_link_libraries(gridline_tests_j50 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j50 PRIVATE tests)
 target_compile_options(gridline_tests_j50 PRIVATE ${GL_WARN})
-add_test(NAME j50_matrixfm_reference COMMAND gridline_tests_j50 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j50_matrixfm_reference COMMAND gridline_tests_j50 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_kappa1 tests/test_kappa1.cpp)
 target_link_libraries(gridline_tests_kappa1 PRIVATE gridline_core)
 target_compile_options(gridline_tests_kappa1 PRIVATE ${GL_WARN})
-add_test(NAME kappa1 COMMAND gridline_tests_kappa1 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME kappa1 COMMAND gridline_tests_kappa1 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_j26 tests/test_j26.cpp)
 target_link_libraries(gridline_tests_j26 PRIVATE gridline_core)
 target_compile_options(gridline_tests_j26 PRIVATE ${GL_WARN})
-add_test(NAME j26_effects COMMAND gridline_tests_j26 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j26_effects COMMAND gridline_tests_j26 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_j35 tests/test_j35.cpp)
 target_link_libraries(gridline_tests_j35 PRIVATE gridline_core)
 target_compile_options(gridline_tests_j35 PRIVATE ${GL_WARN})
-add_test(NAME j35_effects COMMAND gridline_tests_j35 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j35_effects COMMAND gridline_tests_j35 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_j42 tests/test_j42.cpp)
 target_link_libraries(gridline_tests_j42 PRIVATE gridline_core)
 target_compile_options(gridline_tests_j42 PRIVATE ${GL_WARN})
-add_test(NAME j42_effects COMMAND gridline_tests_j42 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j42_effects COMMAND gridline_tests_j42 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_kappa2 tests/test_kappa2.cpp)
 target_link_libraries(gridline_tests_kappa2 PRIVATE gridline_core)
 target_compile_options(gridline_tests_kappa2 PRIVATE ${GL_WARN})
-add_test(NAME kappa2 COMMAND gridline_tests_kappa2 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME kappa2 COMMAND gridline_tests_kappa2 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_kappa3 tests/test_kappa3.cpp)
 target_link_libraries(gridline_tests_kappa3 PRIVATE gridline_core)
 target_compile_options(gridline_tests_kappa3 PRIVATE ${GL_WARN})
-add_test(NAME kappa3 COMMAND gridline_tests_kappa3 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME kappa3 COMMAND gridline_tests_kappa3 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_wavpack tests/test_wavpack.cpp)
 target_link_libraries(gridline_tests_wavpack PRIVATE gridline_core)
 target_compile_options(gridline_tests_wavpack PRIVATE ${GL_WARN})
-add_test(NAME wavpack COMMAND gridline_tests_wavpack WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME wavpack COMMAND gridline_tests_wavpack WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_rawnorm tests/test_rawnorm.cpp)
 target_link_libraries(gridline_tests_rawnorm PRIVATE gridline_core)
 target_compile_options(gridline_tests_rawnorm PRIVATE ${GL_WARN})
-add_test(NAME rawnorm COMMAND gridline_tests_rawnorm WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME rawnorm COMMAND gridline_tests_rawnorm WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_flp tests/test_flp.cpp)
 target_link_libraries(gridline_tests_flp PRIVATE gridline_core)
-add_test(NAME flp_import COMMAND gridline_tests_flp WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME flp_import COMMAND gridline_tests_flp WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_flp_gen2 tests/test_flp_gen2.cpp)
 target_link_libraries(gridline_tests_flp_gen2 PRIVATE gridline_core)
 target_compile_options(gridline_tests_flp_gen2 PRIVATE ${GL_WARN})
-add_test(NAME flp_gen2 COMMAND gridline_tests_flp_gen2 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME flp_gen2 COMMAND gridline_tests_flp_gen2 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_flp_export tests/test_flp_export.cpp)
 target_link_libraries(gridline_tests_flp_export PRIVATE gridline_core)
 target_compile_options(gridline_tests_flp_export PRIVATE ${GL_WARN})
-add_test(NAME flp_export COMMAND gridline_tests_flp_export WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME flp_export COMMAND gridline_tests_flp_export WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_flp_export_perf tests/test_flp_export_perf.cpp)
 target_link_libraries(gridline_tests_flp_export_perf PRIVATE gridline_core)
 target_compile_options(gridline_tests_flp_export_perf PRIVATE ${GL_WARN})
-add_test(NAME flp_export_perf COMMAND gridline_tests_flp_export_perf WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME flp_export_perf COMMAND gridline_tests_flp_export_perf WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_flp_standin tests/test_flp_standin.cpp)
 target_link_libraries(gridline_tests_flp_standin PRIVATE gridline_core)
 target_compile_options(gridline_tests_flp_standin PRIVATE ${GL_WARN})
-target_compile_definitions(gridline_tests_flp_standin PRIVATE GRIDLINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-add_test(NAME flp_standin COMMAND gridline_tests_flp_standin WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+target_compile_definitions(gridline_tests_flp_standin PRIVATE GRIDLINE_SOURCE_DIR="${GRIDLINE_ROOT_DIR}")
+add_test(NAME flp_standin COMMAND gridline_tests_flp_standin WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_flp_suite tests/test_flp_suite.cpp)  # K-110
 target_link_libraries(gridline_tests_flp_suite PRIVATE gridline_core)
 target_compile_options(gridline_tests_flp_suite PRIVATE ${GL_WARN})
-add_test(NAME flp_suite COMMAND gridline_tests_flp_suite WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME flp_suite COMMAND gridline_tests_flp_suite WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_flp_dec3 tests/test_flp_dec3.cpp)
 target_link_libraries(gridline_tests_flp_dec3 PRIVATE gridline_core)
 target_compile_options(gridline_tests_flp_dec3 PRIVATE ${GL_WARN})
-add_test(NAME flp_dec3 COMMAND gridline_tests_flp_dec3 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME flp_dec3 COMMAND gridline_tests_flp_dec3 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_flp_mixer tests/test_flp_mixer.cpp)
 target_link_libraries(gridline_tests_flp_mixer PRIVATE gridline_core)
 target_compile_options(gridline_tests_flp_mixer PRIVATE ${GL_WARN})
-add_test(NAME flp_mixer COMMAND gridline_tests_flp_mixer WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME flp_mixer COMMAND gridline_tests_flp_mixer WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_flp_fx2 tests/test_flp_fx2.cpp)
 target_link_libraries(gridline_tests_flp_fx2 PRIVATE gridline_core)
 target_compile_options(gridline_tests_flp_fx2 PRIVATE ${GL_WARN})
-add_test(NAME flp_fx2 COMMAND gridline_tests_flp_fx2 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME flp_fx2 COMMAND gridline_tests_flp_fx2 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_flp_generators tests/test_flp_generators.cpp)
 target_link_libraries(gridline_tests_flp_generators PRIVATE gridline_core)
 target_compile_options(gridline_tests_flp_generators PRIVATE ${GL_WARN})
-add_test(NAME flp_generators COMMAND gridline_tests_flp_generators WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME flp_generators COMMAND gridline_tests_flp_generators WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_arrangement tests/test_arrangement.cpp)
 target_link_libraries(gridline_tests_arrangement PRIVATE gridline_core)
 target_compile_options(gridline_tests_arrangement PRIVATE ${GL_WARN})
-add_test(NAME arrangement COMMAND gridline_tests_arrangement WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME arrangement COMMAND gridline_tests_arrangement WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_corpus tests/test_corpus.cpp)
 target_link_libraries(gridline_tests_corpus PRIVATE gridline_core)
 target_compile_options(gridline_tests_corpus PRIVATE ${GL_WARN})
-add_test(NAME corpus COMMAND gridline_tests_corpus WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME corpus COMMAND gridline_tests_corpus WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_browser tests/test_browser.cpp)
 target_link_libraries(gridline_tests_browser PRIVATE gridline_core)
 target_include_directories(gridline_tests_browser PRIVATE tests)
 target_compile_options(gridline_tests_browser PRIVATE ${GL_WARN})
-add_test(NAME browser COMMAND gridline_tests_browser WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME browser COMMAND gridline_tests_browser WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-75: drags from other applications (planning, formats, headers; macOS: pasteboards + the window's drag destination).
 add_executable(gridline_tests_external_drop tests/test_external_drop.cpp)
 target_link_libraries(gridline_tests_external_drop PRIVATE gridline_core)
 target_include_directories(gridline_tests_external_drop PRIVATE tests)
 target_compile_options(gridline_tests_external_drop PRIVATE ${GL_WARN})
-add_test(NAME external_drop COMMAND gridline_tests_external_drop WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME external_drop COMMAND gridline_tests_external_drop WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-97: drop-to-replace on the channel rack (row zones, sample slots, name policy).
 add_executable(gridline_tests_j97 tests/test_j97.cpp)
 target_link_libraries(gridline_tests_j97 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j97 PRIVATE tests)
 target_compile_options(gridline_tests_j97 PRIVATE ${GL_WARN})
-add_test(NAME j97 COMMAND gridline_tests_j97 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j97 COMMAND gridline_tests_j97 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-16 / K-18: browser file operations (rename, folders, moves, the trash, project references
 # and undo) and favourite plugins (settings round trip, picker order).
 add_executable(gridline_tests_k18 tests/test_k18.cpp)
 target_link_libraries(gridline_tests_k18 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k18 PRIVATE tests)
 target_compile_options(gridline_tests_k18 PRIVATE ${GL_WARN})
-add_test(NAME k18_file_ops COMMAND gridline_tests_k18 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k18_file_ops COMMAND gridline_tests_k18 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-6: ASIO backend: sample formats, buffer sizes, channel plan and the host on the simulated
 # driver (every platform); the registry driver list (Windows only, passes with none installed).
 add_executable(gridline_tests_asio tests/test_asio.cpp)
 target_link_libraries(gridline_tests_asio PRIVATE gridline_core)
 target_include_directories(gridline_tests_asio PRIVATE tests)
 target_compile_options(gridline_tests_asio PRIVATE ${GL_WARN})
-add_test(NAME k6_asio COMMAND gridline_tests_asio WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k6_asio COMMAND gridline_tests_asio WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 if(WIN32)
   add_executable(gridline_tests_asio_win tests/test_asio_win.cpp)
   target_link_libraries(gridline_tests_asio_win PRIVATE gridline_core)
   target_include_directories(gridline_tests_asio_win PRIVATE tests)
   target_compile_options(gridline_tests_asio_win PRIVATE ${GL_WARN})
-  add_test(NAME k6_asio_drivers COMMAND gridline_tests_asio_win WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  add_test(NAME k6_asio_drivers COMMAND gridline_tests_asio_win WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 endif()
 # J-143: the OUT meter (level meter ballistics, master bus peak) and the shipped templates.
 add_executable(gridline_tests_j143 tests/test_j143.cpp)
 target_link_libraries(gridline_tests_j143 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j143 PRIVATE tests)
 target_compile_options(gridline_tests_j143 PRIVATE ${GL_WARN})
-add_test(NAME j143_out_meter COMMAND gridline_tests_j143 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j143_out_meter COMMAND gridline_tests_j143 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 # J-89: update check (versions, release JSON, downloads per platform, SHA256SUMS, schedule; no network).
 add_executable(gridline_tests_update tests/test_update.cpp)
 target_link_libraries(gridline_tests_update PRIVATE gridline_core)
 target_include_directories(gridline_tests_update PRIVATE tests)
 target_compile_options(gridline_tests_update PRIVATE ${GL_WARN})
-add_test(NAME update_check COMMAND gridline_tests_update WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME update_check COMMAND gridline_tests_update WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-125: the forms of the version (0.7.0-beta.1, 0.7.0, 0.7.0~beta.1, rpm Release) agree in CMake,
 # tools/release/version.sh, GridlineVersion.h, `gridline --version`, the Info.plists and .rc files.
-add_test(NAME version_forms COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DBIN=${CMAKE_BINARY_DIR} -DCLI=$<TARGET_FILE:gridline>
-                                    -P ${CMAKE_SOURCE_DIR}/tests/version_forms.cmake)
+add_test(NAME version_forms COMMAND ${CMAKE_COMMAND} -DSRC=${GRIDLINE_ROOT_DIR} -DBIN=${GRIDLINE_BUILD_DIR} -DCLI=$<TARGET_FILE:gridline>
+                                    -P ${GRIDLINE_ROOT_DIR}/tests/version_forms.cmake)
 # J-111: collaboration core (replicated document, sessions, undo locality, op log, files, policy,
 # relay, conflicts and admin review, signatures, profiles), all in memory with fixed seeds.
 add_executable(gridline_tests_collab tests/test_collab.cpp)
 target_link_libraries(gridline_tests_collab PRIVATE gridline_core)
 target_include_directories(gridline_tests_collab PRIVATE tests)
 target_compile_options(gridline_tests_collab PRIVATE ${GL_WARN})
-add_test(NAME collab COMMAND gridline_tests_collab WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME collab COMMAND gridline_tests_collab WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(collab PROPERTIES TIMEOUT 600)
 # J-111: encrypted reliable link (loss, reordering, tampering), invites, reply / expiry / reuse, the
 # version gate between peers, relaying through a collaborator, introductions, reconnects (in memory).
@@ -667,14 +686,14 @@ add_executable(gridline_tests_collab_net tests/test_collab_net.cpp)
 target_link_libraries(gridline_tests_collab_net PRIVATE gridline_core)
 target_include_directories(gridline_tests_collab_net PRIVATE tests)
 target_compile_options(gridline_tests_collab_net PRIVATE ${GL_WARN})
-add_test(NAME collab_net COMMAND gridline_tests_collab_net WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME collab_net COMMAND gridline_tests_collab_net WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(collab_net PROPERTIES TIMEOUT 600)
 # J-111: sound and playback stay on each computer (two collaborators with real engines, offline).
 add_executable(gridline_tests_collab_local tests/test_collab_local.cpp)
 target_link_libraries(gridline_tests_collab_local PRIVATE gridline_core)
 target_include_directories(gridline_tests_collab_local PRIVATE tests)
 target_compile_options(gridline_tests_collab_local PRIVATE ${GL_WARN})
-add_test(NAME collab_local COMMAND gridline_tests_collab_local WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME collab_local COMMAND gridline_tests_collab_local WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(collab_local PROPERTIES TIMEOUT 600)
 # J-146: presence on the welcome screen (authenticated probes both ways, strangers, removed,
 # hidden, other versions, no answer, transitive), project cards and the list model (in memory).
@@ -684,7 +703,7 @@ add_executable(gridline_tests_collab_undo tests/test_collab_undo.cpp)
 target_link_libraries(gridline_tests_collab_undo PRIVATE gridline_core)
 target_include_directories(gridline_tests_collab_undo PRIVATE tests)
 target_compile_options(gridline_tests_collab_undo PRIVATE ${GL_WARN})
-add_test(NAME k141_collab_undo COMMAND gridline_tests_collab_undo WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k141_collab_undo COMMAND gridline_tests_collab_undo WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k141_collab_undo PROPERTIES TIMEOUT 900)
 # K-141: the history: notes with each step, levels and memory budget, clearing / rebuilding it,
 # stepping on a scratch song, the move callback, rollbacks that never take an unrelated step.
@@ -692,19 +711,19 @@ add_executable(gridline_tests_undo_history tests/test_undo_history.cpp)
 target_link_libraries(gridline_tests_undo_history PRIVATE gridline_core)
 target_include_directories(gridline_tests_undo_history PRIVATE tests)
 target_compile_options(gridline_tests_undo_history PRIVATE ${GL_WARN})
-add_test(NAME k141_undo_history COMMAND gridline_tests_undo_history WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k141_undo_history COMMAND gridline_tests_undo_history WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_collab_presence tests/test_collab_presence.cpp)
 target_link_libraries(gridline_tests_collab_presence PRIVATE gridline_core)
 target_include_directories(gridline_tests_collab_presence PRIVATE tests)
 target_compile_options(gridline_tests_collab_presence PRIVATE ${GL_WARN})
-add_test(NAME j146_collab_presence COMMAND gridline_tests_collab_presence WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j146_collab_presence COMMAND gridline_tests_collab_presence WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(j146_collab_presence PROPERTIES TIMEOUT 600)
 # J-111: two gridline processes, separate configs, real ICE on this computer (no server).
 if(GRIDLINE_COLLAB)
   add_test(NAME j111_collab_processes
-           COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:gridline> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                   -DOUT=${CMAKE_BINARY_DIR}/j111_collab -P ${CMAKE_SOURCE_DIR}/tests/j111_collab.cmake
-           WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+           COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:gridline> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                   -DOUT=${GRIDLINE_BUILD_DIR}/j111_collab -P ${GRIDLINE_ROOT_DIR}/tests/j111_collab.cmake
+           WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
   set_tests_properties(j111_collab_processes PROPERTIES TIMEOUT 400)
 endif()
 set_tests_properties(update_check PROPERTIES ENVIRONMENT "GRIDLINE_NO_UPDATE_CHECK=1")
@@ -713,46 +732,46 @@ if(APPLE)
   target_link_libraries(gridline_tests_external_drop_mac PRIVATE gridline_core "-framework AppKit")
   target_include_directories(gridline_tests_external_drop_mac PRIVATE tests)
   target_compile_options(gridline_tests_external_drop_mac PRIVATE ${GL_WARN_LOOSE})
-  add_test(NAME external_drop_mac COMMAND gridline_tests_external_drop_mac WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  add_test(NAME external_drop_mac COMMAND gridline_tests_external_drop_mac WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
   # K-36: the Audio Unit listener and the backend's lifetime (Apple's AUDelay, create/listen/destroy stress).
   add_executable(gridline_tests_k36 tests/test_k36_au_listener.mm)
   target_link_libraries(gridline_tests_k36 PRIVATE gridline_core)
   target_include_directories(gridline_tests_k36 PRIVATE tests)
   target_compile_options(gridline_tests_k36 PRIVATE ${GL_WARN})
-  add_test(NAME k36_au_listener COMMAND gridline_tests_k36 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  add_test(NAME k36_au_listener COMMAND gridline_tests_k36 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
   set_tests_properties(k36_au_listener PROPERTIES TIMEOUT 300)
 endif()
 add_executable(gridline_tests_channels tests/test_channels.cpp)
 target_link_libraries(gridline_tests_channels PRIVATE gridline_core)
 target_compile_options(gridline_tests_channels PRIVATE ${GL_WARN})
-add_test(NAME channels COMMAND gridline_tests_channels WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME channels COMMAND gridline_tests_channels WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-138: song swing (smooth knob, notes swing with steps, sample-accurate playback).
 add_executable(gridline_tests_swing tests/test_swing.cpp)
 target_link_libraries(gridline_tests_swing PRIVATE gridline_core)
 target_compile_options(gridline_tests_swing PRIVATE ${GL_WARN})
-add_test(NAME swing COMMAND gridline_tests_swing WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME swing COMMAND gridline_tests_swing WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_presets tests/test_presets.cpp)
 target_link_libraries(gridline_tests_presets PRIVATE gridline_core)
-add_test(NAME presets COMMAND gridline_tests_presets WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME presets COMMAND gridline_tests_presets WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_coverage tests/test_coverage.cpp)
 target_link_libraries(gridline_tests_coverage PRIVATE gridline_core)
 target_compile_options(gridline_tests_coverage PRIVATE ${GL_WARN})
-add_test(NAME coverage COMMAND gridline_tests_coverage WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME coverage COMMAND gridline_tests_coverage WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-27 menu parity sweep: the new menu operations (MenuParity, NoteFxBurn).
 # J-55: keymap registry, translation layer and i18n coverage of the sources (runs in the source dir).
 add_executable(gridline_tests_shortcuts_i18n tests/test_shortcuts_i18n.cpp)
 target_link_libraries(gridline_tests_shortcuts_i18n PRIVATE gridline_core)
 target_compile_options(gridline_tests_shortcuts_i18n PRIVATE ${GL_WARN})
-add_test(NAME shortcuts_i18n COMMAND gridline_tests_shortcuts_i18n WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME shortcuts_i18n COMMAND gridline_tests_shortcuts_i18n WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 add_executable(gridline_tests_menu_parity tests/test_menu_parity.cpp)
 target_link_libraries(gridline_tests_menu_parity PRIVATE gridline_core)
 target_compile_options(gridline_tests_menu_parity PRIVATE ${GL_WARN})
-add_test(NAME menu_parity COMMAND gridline_tests_menu_parity WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME menu_parity COMMAND gridline_tests_menu_parity WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # VST3 hosting: a tiny in-tree test plugin bundle (instrument + effect) and the host tests.
 add_library(gridline_vst3_testplug MODULE tests/vst3/TestPlugin.cpp)
 target_link_libraries(gridline_vst3_testplug PRIVATE vst3_pluginterfaces)
 target_compile_options(gridline_vst3_testplug PRIVATE ${GL_WARN})
-set(GRIDLINE_TESTPLUG_BUNDLE ${CMAKE_BINARY_DIR}/test-vst3/GridlineTest.vst3)
+set(GRIDLINE_TESTPLUG_BUNDLE ${GRIDLINE_BUILD_DIR}/test-vst3/GridlineTest.vst3)
 if(APPLE)
   set(GRIDLINE_TESTPLUG_DIR ${GRIDLINE_TESTPLUG_BUNDLE}/Contents/MacOS)
   set_target_properties(gridline_vst3_testplug PROPERTIES PREFIX "" SUFFIX "" OUTPUT_NAME GridlineTest
@@ -779,7 +798,7 @@ target_compile_options(gridline_tests_vst3 PRIVATE ${GL_WARN})
 target_compile_definitions(gridline_tests_vst3 PRIVATE GRIDLINE_TESTPLUG_BUNDLE="${GRIDLINE_TESTPLUG_BUNDLE}"
                            GRIDLINE_CLI_EXE="$<TARGET_FILE:gridline>")
 add_dependencies(gridline_tests_vst3 gridline_vst3_testplug gridline)
-add_test(NAME vst3_host COMMAND gridline_tests_vst3 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME vst3_host COMMAND gridline_tests_vst3 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 
 # CLAP / VST2 / AU hosting, the plugin sandbox and FL "Fruity Wrapper" import:
 # in-tree test plugins (never installed) and the host tests.
@@ -799,9 +818,9 @@ if(APPLE)
   target_link_libraries(gridline_vst3_testplug PRIVATE "-framework AppKit")
   target_link_libraries(gridline_clap_testplug PRIVATE "-framework AppKit")
 endif()
-set(GRIDLINE_CLAP_TESTPLUG ${CMAKE_BINARY_DIR}/test-clap/GridlineTest.clap)
+set(GRIDLINE_CLAP_TESTPLUG ${GRIDLINE_BUILD_DIR}/test-clap/GridlineTest.clap)
 if(APPLE)
-  set(GRIDLINE_VST2_TESTPLUG ${CMAKE_BINARY_DIR}/test-vst2/GridlineTestVst2.vst)
+  set(GRIDLINE_VST2_TESTPLUG ${GRIDLINE_BUILD_DIR}/test-vst2/GridlineTestVst2.vst)
   set_target_properties(gridline_clap_testplug PROPERTIES PREFIX "" SUFFIX "" OUTPUT_NAME GridlineTest
                         LIBRARY_OUTPUT_DIRECTORY ${GRIDLINE_CLAP_TESTPLUG}/Contents/MacOS)
   set_target_properties(gridline_vst2_testplug PROPERTIES PREFIX "" SUFFIX "" OUTPUT_NAME GridlineTestVst2
@@ -818,11 +837,11 @@ if(APPLE)
          "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>CFBundleExecutable</key><string>${_exe}</string>\n<key>CFBundleIdentifier</key><string>org.gridline.${b}.test</string>\n<key>CFBundlePackageType</key><string>BNDL</string>\n</dict></plist>\n")
   endforeach()
 else()
-  set(GRIDLINE_VST2_TESTPLUG ${CMAKE_BINARY_DIR}/test-vst2/GridlineTestVst2${CMAKE_SHARED_MODULE_SUFFIX})
+  set(GRIDLINE_VST2_TESTPLUG ${GRIDLINE_BUILD_DIR}/test-vst2/GridlineTestVst2${CMAKE_SHARED_MODULE_SUFFIX})
   set_target_properties(gridline_clap_testplug PROPERTIES PREFIX "" SUFFIX ".clap" OUTPUT_NAME GridlineTest
-                        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/test-clap)
+                        LIBRARY_OUTPUT_DIRECTORY ${GRIDLINE_BUILD_DIR}/test-clap)
   set_target_properties(gridline_vst2_testplug PROPERTIES PREFIX "" SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}" OUTPUT_NAME GridlineTestVst2
-                        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/test-vst2)
+                        LIBRARY_OUTPUT_DIRECTORY ${GRIDLINE_BUILD_DIR}/test-vst2)
 endif()
 add_executable(gridline_tests_hosting tests/test_hosting.cpp)
 target_link_libraries(gridline_tests_hosting PRIVATE gridline_core)
@@ -831,7 +850,7 @@ target_compile_definitions(gridline_tests_hosting PRIVATE GRIDLINE_CLAP_TESTPLUG
                            GRIDLINE_VST2_TESTPLUG="${GRIDLINE_VST2_TESTPLUG}" GRIDLINE_TESTPLUG_BUNDLE="${GRIDLINE_TESTPLUG_BUNDLE}"
                            GRIDLINE_CLI_EXE="$<TARGET_FILE:gridline>")
 add_dependencies(gridline_tests_hosting gridline_clap_testplug gridline_vst2_testplug gridline_vst3_testplug gridline)
-add_test(NAME plugin_hosting COMMAND gridline_tests_hosting WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME plugin_hosting COMMAND gridline_tests_hosting WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-13: plugin search folders per format (fixture CLAP plugin in temp folders only).
 add_executable(gridline_tests_plugin_folders tests/test_plugin_folders.cpp)
 target_link_libraries(gridline_tests_plugin_folders PRIVATE gridline_core)
@@ -840,13 +859,13 @@ target_compile_options(gridline_tests_plugin_folders PRIVATE ${GL_WARN})
 target_compile_definitions(gridline_tests_plugin_folders PRIVATE GRIDLINE_CLAP_TESTPLUG="${GRIDLINE_CLAP_TESTPLUG}"
                            GRIDLINE_CLI_EXE="$<TARGET_FILE:gridline>")
 add_dependencies(gridline_tests_plugin_folders gridline_clap_testplug gridline)
-add_test(NAME k13_plugin_folders COMMAND gridline_tests_plugin_folders WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k13_plugin_folders COMMAND gridline_tests_plugin_folders WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-71: a plugin scan never holds up the interface (fake scanner children, fake plugin folders).
 add_executable(gridline_tests_scan_hang tests/test_scan_hang.cpp)
 target_link_libraries(gridline_tests_scan_hang PRIVATE gridline_core)
 target_include_directories(gridline_tests_scan_hang PRIVATE src tests)
 target_compile_options(gridline_tests_scan_hang PRIVATE ${GL_WARN})
-add_test(NAME k71_scan_hang COMMAND gridline_tests_scan_hang WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k71_scan_hang COMMAND gridline_tests_scan_hang WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k71_scan_hang PROPERTIES TIMEOUT 240)
 # K-73: a stand-in plugin scanner child (fake plugins that hang, crash, are slow or hold many plugins).
 add_executable(gridline_fake_plugin_scanner tests/fake_plugin_scanner.cpp)
@@ -857,32 +876,32 @@ target_link_libraries(gridline_tests_scan_stress PRIVATE gridline_core)
 target_include_directories(gridline_tests_scan_stress PRIVATE src tests)
 target_compile_options(gridline_tests_scan_stress PRIVATE ${GL_WARN})
 add_dependencies(gridline_tests_scan_stress gridline_fake_plugin_scanner)
-add_test(NAME k73_scan_stress COMMAND gridline_tests_scan_stress $<TARGET_FILE:gridline_fake_plugin_scanner> WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k73_scan_stress COMMAND gridline_tests_scan_stress $<TARGET_FILE:gridline_fake_plugin_scanner> WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k73_scan_stress PROPERTIES TIMEOUT 600)
 # J-66: keys from plugin interfaces to Gridline's shortcuts.
 add_executable(gridline_tests_j66 tests/test_j66.cpp)
 target_link_libraries(gridline_tests_j66 PRIVATE gridline_core)
 target_compile_options(gridline_tests_j66 PRIVATE ${GL_WARN})
-add_test(NAME j66_plugin_keys COMMAND gridline_tests_j66 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j66_plugin_keys COMMAND gridline_tests_j66 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # Q-4: piano roll event lane painting (segment sweep) and line tool.
 add_executable(gridline_tests_q4 tests/test_q4.cpp)
 target_link_libraries(gridline_tests_q4 PRIVATE gridline_core)
 target_compile_options(gridline_tests_q4 PRIVATE ${GL_WARN})
-add_test(NAME q4_event_lane COMMAND gridline_tests_q4 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME q4_event_lane COMMAND gridline_tests_q4 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-73: eye toggle, shared minimum inset, effect reorder by wheel, reverb room drag, lane bar glides.
 add_executable(gridline_tests_j73 tests/test_j73.cpp)
 target_link_libraries(gridline_tests_j73 PRIVATE gridline_core)
 target_compile_options(gridline_tests_j73 PRIVATE ${GL_WARN})
-add_test(NAME j73_ui_polish COMMAND gridline_tests_j73 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j73_ui_polish COMMAND gridline_tests_j73 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 
 # J-128: layout alignment checker (rows, labels, gaps, baselines, overlaps, clipping) and its regression gate.
 add_executable(gridline_tests_align_check tests/test_align_check.cpp)
 target_compile_options(gridline_tests_align_check PRIVATE ${GL_WARN})
-add_test(NAME j128_align_check COMMAND gridline_tests_align_check WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j128_align_check COMMAND gridline_tests_align_check WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 
 # LV2 hosting (PH-04): an in-tree test bundle (three plugins, their interfaces,
 # presets) plus a presets-only bundle, built into test-lv2/ (never installed).
-set(GRIDLINE_LV2_DIR ${CMAKE_BINARY_DIR}/test-lv2)
+set(GRIDLINE_LV2_DIR ${GRIDLINE_BUILD_DIR}/test-lv2)
 set(GRIDLINE_LV2_BUNDLE ${GRIDLINE_LV2_DIR}/GridlineTest.lv2)
 set(GL_LV2_EXT ${CMAKE_SHARED_LIBRARY_SUFFIX})
 set(GRIDLINE_LV2_UI_SRC tests/lv2/TestUi.cpp)
@@ -923,7 +942,7 @@ target_compile_options(gridline_tests_lv2 PRIVATE ${GL_WARN})
 target_compile_definitions(gridline_tests_lv2 PRIVATE GRIDLINE_LV2_DIR="${GRIDLINE_LV2_DIR}" GRIDLINE_LV2_BUNDLE="${GRIDLINE_LV2_BUNDLE}"
                            GRIDLINE_LV2_EXT="${GL_LV2_EXT}" GRIDLINE_CLI_EXE="$<TARGET_FILE:gridline>")
 add_dependencies(gridline_tests_lv2 gridline_lv2_testplug gridline_lv2_testui gridline)
-add_test(NAME lv2_host COMMAND gridline_tests_lv2 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME lv2_host COMMAND gridline_tests_lv2 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # The plugin-check sweep runs the test plugins against real-time block deadlines: run it alone
 # so a busy parallel ctest on a small CI runner cannot turn load into a failure.
 set_tests_properties(lv2_host PROPERTIES RUN_SERIAL TRUE)
@@ -931,7 +950,7 @@ set_tests_properties(lv2_host PROPERTIES RUN_SERIAL TRUE)
 add_executable(gridline_tests_scripting tests/test_scripting.cpp)
 target_link_libraries(gridline_tests_scripting PRIVATE gridline_core)
 target_compile_options(gridline_tests_scripting PRIVATE ${GL_WARN})
-add_test(NAME scripting COMMAND gridline_tests_scripting WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME scripting COMMAND gridline_tests_scripting WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 
 # SC-07: MCP server (protocol, tools, loopback HTTP transport, stdio, attach bridge).
 add_executable(gridline_tests_mcp tests/test_mcp.cpp)
@@ -939,13 +958,13 @@ target_link_libraries(gridline_tests_mcp PRIVATE gridline_core)
 target_compile_options(gridline_tests_mcp PRIVATE ${GL_WARN})
 target_compile_definitions(gridline_tests_mcp PRIVATE GRIDLINE_CLI_EXE="$<TARGET_FILE:gridline>")
 add_dependencies(gridline_tests_mcp gridline)
-add_test(NAME mcp COMMAND gridline_tests_mcp WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME mcp COMMAND gridline_tests_mcp WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 
 # J-57: full-model project scripting API (SC-02).
 add_executable(gridline_tests_project_script tests/test_project_script.cpp)
 target_link_libraries(gridline_tests_project_script PRIVATE gridline_core)
 target_compile_options(gridline_tests_project_script PRIVATE ${GL_WARN})
-add_test(NAME project_script COMMAND gridline_tests_project_script WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME project_script COMMAND gridline_tests_project_script WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 
 # J-59: loop starter (GEN-01) and render to sampled instrument (RN-08).
 add_executable(gridline_tests_j59 tests/test_j59.cpp)
@@ -953,13 +972,13 @@ target_link_libraries(gridline_tests_j59 PRIVATE gridline_core)
 target_compile_options(gridline_tests_j59 PRIVATE ${GL_WARN})
 target_compile_definitions(gridline_tests_j59 PRIVATE GRIDLINE_TESTPLUG_BUNDLE="${GRIDLINE_TESTPLUG_BUNDLE}")
 add_dependencies(gridline_tests_j59 gridline_vst3_testplug)
-add_test(NAME j59_loopstarter_sampler COMMAND gridline_tests_j59 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j59_loopstarter_sampler COMMAND gridline_tests_j59 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 
 # J-61: audio load meter, secret store (MCP token) and its migration.
 add_executable(gridline_tests_j61 tests/test_j61.cpp)
 target_link_libraries(gridline_tests_j61 PRIVATE gridline_core)
 target_compile_options(gridline_tests_j61 PRIVATE ${GL_WARN})
-add_test(NAME j61_followups COMMAND gridline_tests_j61 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j61_followups COMMAND gridline_tests_j61 WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 
 # J-86: the operating-system layer (folders, processes, numbers, sockets, shared objects, keys).
 add_executable(gridline_tests_portability tests/test_portability.cpp)
@@ -968,150 +987,150 @@ target_include_directories(gridline_tests_portability PRIVATE tests)
 target_compile_options(gridline_tests_portability PRIVATE ${GL_WARN})
 target_compile_definitions(gridline_tests_portability PRIVATE GRIDLINE_CLI_EXE="$<TARGET_FILE:gridline>")
 add_dependencies(gridline_tests_portability gridline)
-add_test(NAME portability COMMAND gridline_tests_portability WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME portability COMMAND gridline_tests_portability WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 
 add_executable(gridline_tests_recording tests/test_recording.cpp)
 target_link_libraries(gridline_tests_recording PRIVATE gridline_core)
 target_compile_options(gridline_tests_recording PRIVATE ${GL_WARN})
-add_test(NAME recording COMMAND gridline_tests_recording WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME recording COMMAND gridline_tests_recording WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-20: export & interop (render scopes, tails, dither, stems, MIDI, zipped projects, relinking).
 add_executable(gridline_tests_export tests/test_export.cpp)
 target_link_libraries(gridline_tests_export PRIVATE gridline_core)
 target_include_directories(gridline_tests_export PRIVATE tests)
 target_compile_options(gridline_tests_export PRIVATE ${GL_WARN})
-add_test(NAME export COMMAND gridline_tests_export WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME export COMMAND gridline_tests_export WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-52: project files — open vs import routing, dialog types, FL Studio zipped loop package.
 add_executable(gridline_tests_project_files tests/test_project_files.cpp)
 target_link_libraries(gridline_tests_project_files PRIVATE gridline_core)
 target_include_directories(gridline_tests_project_files PRIVATE tests)
 target_compile_options(gridline_tests_project_files PRIVATE ${GL_WARN})
-add_test(NAME project_files COMMAND gridline_tests_project_files WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME project_files COMMAND gridline_tests_project_files WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-51: M4A (AAC, Apple Lossless) and ADTS AAC samples: system decoder and FFmpeg routes, FL import.
 add_executable(gridline_tests_k51 tests/test_k51.cpp)
 target_link_libraries(gridline_tests_k51 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k51 PRIVATE tests src)
 target_compile_options(gridline_tests_k51 PRIVATE ${GL_WARN})
-add_test(NAME k51_m4a COMMAND gridline_tests_k51 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k51_m4a COMMAND gridline_tests_k51 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-121: single project extensions (.gridline, .gridlinez; the older names still open) and one Gridline per user.
 add_executable(gridline_tests_k121 tests/test_k121.cpp)
 target_link_libraries(gridline_tests_k121 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k121 PRIVATE tests src)
 target_compile_options(gridline_tests_k121 PRIVATE ${GL_WARN})
-add_test(NAME k121 COMMAND gridline_tests_k121 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k121 COMMAND gridline_tests_k121 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-78: FLP export hunt, FLP file writing, save types (Gridline zipped project), notification copy text.
 add_executable(gridline_tests_j78 tests/test_j78.cpp src/app/ToastText.cpp)
 target_link_libraries(gridline_tests_j78 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j78 PRIVATE tests src)
 target_compile_options(gridline_tests_j78 PRIVATE ${GL_WARN})
-add_test(NAME j78 COMMAND gridline_tests_j78 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j78 COMMAND gridline_tests_j78 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-135: the "Gridline" demo song loads, has its section markers and renders on target (loudness, true peak).
 add_executable(gridline_tests_demo_song tests/test_demo_song.cpp)
 target_link_libraries(gridline_tests_demo_song PRIVATE gridline_core)
 target_include_directories(gridline_tests_demo_song PRIVATE tests src)
 target_compile_options(gridline_tests_demo_song PRIVATE ${GL_WARN})
-add_test(NAME j135_demo_song COMMAND gridline_tests_demo_song WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME j135_demo_song COMMAND gridline_tests_demo_song WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 set_tests_properties(j135_demo_song PROPERTIES TIMEOUT 900)
 # Stand-ins for missing Serum / Kickstart (Plasma / Tideline) and Plasma's one Open path for preset files.
 add_executable(gridline_tests_standin tests/test_standin.cpp)
 target_link_libraries(gridline_tests_standin PRIVATE gridline_core)
 target_include_directories(gridline_tests_standin PRIVATE tests src)
 target_compile_options(gridline_tests_standin PRIVATE ${GL_WARN})
-add_test(NAME standin COMMAND gridline_tests_standin WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME standin COMMAND gridline_tests_standin WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-31: chord progression editor core, groups & loops, recording extras, key markers, quantized jumps.
 add_executable(gridline_tests_j31 tests/test_j31.cpp)
 target_link_libraries(gridline_tests_j31 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j31 PRIVATE tests)
 target_compile_options(gridline_tests_j31 PRIVATE ${GL_WARN})
-add_test(NAME j31 COMMAND gridline_tests_j31 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j31 COMMAND gridline_tests_j31 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-77: engine note state (lit keys, pad flashes), Keep / Revert flow, PAT shows the rack.
 add_executable(gridline_tests_j77 tests/test_j77.cpp src/app/DisplayConfirm.cpp)
 target_link_libraries(gridline_tests_j77 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j77 PRIVATE tests src)
 target_compile_options(gridline_tests_j77 PRIVATE ${GL_WARN})
-add_test(NAME j77 COMMAND gridline_tests_j77 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j77 COMMAND gridline_tests_j77 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-217: the incremental waveform summary of takes being recorded; live placement equals the committed clips.
 add_executable(gridline_tests_j217 tests/test_j217.cpp)
 target_link_libraries(gridline_tests_j217 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j217 PRIVATE tests src)
 target_compile_options(gridline_tests_j217 PRIVATE ${GL_WARN})
-add_test(NAME j217_live_take COMMAND gridline_tests_j217 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j217_live_take COMMAND gridline_tests_j217 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-186: play lights: channel activity (note starts, held notes, output peak), the rack light model, Kerf's sounding regions.
 add_executable(gridline_tests_j186 tests/test_j186.cpp)
 target_link_libraries(gridline_tests_j186 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j186 PRIVATE tests src)
 target_compile_options(gridline_tests_j186 PRIVATE ${GL_WARN})
-add_test(NAME j186 COMMAND gridline_tests_j186 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j186 COMMAND gridline_tests_j186 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-79: topmost-only delete sweeps, the audio clip volume line, zero crossings, stretch mode, toggles.
 add_executable(gridline_tests_j79 tests/test_j79.cpp)
 target_link_libraries(gridline_tests_j79 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j79 PRIVATE tests src)
 target_compile_options(gridline_tests_j79 PRIVATE ${GL_WARN})
-add_test(NAME j79 COMMAND gridline_tests_j79 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j79 COMMAND gridline_tests_j79 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_clip_multi_edit tests/test_clip_multi_edit.cpp)
 target_link_libraries(gridline_tests_clip_multi_edit PRIVATE gridline_core)
 target_include_directories(gridline_tests_clip_multi_edit PRIVATE tests src)
 target_compile_options(gridline_tests_clip_multi_edit PRIVATE ${GL_WARN})
-add_test(NAME clip_multi_edit COMMAND gridline_tests_clip_multi_edit WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME clip_multi_edit COMMAND gridline_tests_clip_multi_edit WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-196: clip level drags patch the playing program; pitch drags defer renders and keep voices.
 add_executable(gridline_tests_j196 tests/test_j196.cpp)
 target_link_libraries(gridline_tests_j196 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j196 PRIVATE tests src)
 target_compile_options(gridline_tests_j196 PRIVATE ${GL_WARN})
-add_test(NAME j196 COMMAND gridline_tests_j196 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j196 COMMAND gridline_tests_j196 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-208: the playlist picker's "+" (New pattern naming) and instruments dropped on playlist tracks.
 add_executable(gridline_tests_j208 tests/test_j208.cpp)
 target_link_libraries(gridline_tests_j208 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j208 PRIVATE tests src)
 target_compile_options(gridline_tests_j208 PRIVATE ${GL_WARN})
-add_test(NAME j208 COMMAND gridline_tests_j208 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j208 COMMAND gridline_tests_j208 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-12: the playlist track "+" edits (an instrument for a track, a pattern started on it; one undo step each).
 add_executable(gridline_tests_k12 tests/test_k12.cpp)
 target_link_libraries(gridline_tests_k12 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k12 PRIVATE tests src)
 target_compile_options(gridline_tests_k12 PRIVATE ${GL_WARN})
-add_test(NAME k12 COMMAND gridline_tests_k12 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k12 COMMAND gridline_tests_k12 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-213: replacing a channel's instrument renames an automatically named channel (one undo step).
 add_executable(gridline_tests_j213 tests/test_j213.cpp)
 target_link_libraries(gridline_tests_j213 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j213 PRIVATE tests src)
 target_compile_options(gridline_tests_j213 PRIVATE ${GL_WARN})
-add_test(NAME j213 COMMAND gridline_tests_j213 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j213 COMMAND gridline_tests_j213 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-126: the channel rack's solo (right-click on a channel's LED) and its unsolo.
 add_executable(gridline_tests_k126 tests/test_k126.cpp)
 target_link_libraries(gridline_tests_k126 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k126 PRIVATE tests src)
 target_compile_options(gridline_tests_k126 PRIVATE ${GL_WARN})
-add_test(NAME k126_channel_solo COMMAND gridline_tests_k126 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k126_channel_solo COMMAND gridline_tests_k126 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-85: one-step song loop markers; marker actions in the audio engine (sample-exact).
 add_executable(gridline_tests_j85 tests/test_j85.cpp)
 target_link_libraries(gridline_tests_j85 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j85 PRIVATE tests src)
 target_compile_options(gridline_tests_j85 PRIVATE ${GL_WARN})
-add_test(NAME j85 COMMAND gridline_tests_j85 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j85 COMMAND gridline_tests_j85 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-87: time stretching / pitch shifting (engine/TimeStretch, Signalsmith Stretch).
 add_executable(gridline_tests_j87 tests/test_j87.cpp)
 target_link_libraries(gridline_tests_j87 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j87 PRIVATE tests src)
 target_compile_options(gridline_tests_j87 PRIVATE ${GL_WARN})
-add_test(NAME j87 COMMAND gridline_tests_j87 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j87 COMMAND gridline_tests_j87 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-164: an audio clip's pitch never changes its length or how its audio fills it.
 add_executable(gridline_tests_j164 tests/test_j164.cpp)
 target_link_libraries(gridline_tests_j164 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j164 PRIVATE tests src)
 target_compile_options(gridline_tests_j164 PRIVATE ${GL_WARN})
-add_test(NAME j164 COMMAND gridline_tests_j164 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j164 COMMAND gridline_tests_j164 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-168: FLP playlist records of every size; an unknown layout is read or reported, never dropped.
 add_executable(gridline_tests_j168 tests/test_j168.cpp)
 target_link_libraries(gridline_tests_j168 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j168 PRIVATE tests src)
 target_compile_options(gridline_tests_j168 PRIVATE ${GL_WARN})
-add_test(NAME j168 COMMAND gridline_tests_j168 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j168 COMMAND gridline_tests_j168 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-177: FL channel stretch "time": imported clips play on the beat grid, round trip.
 add_executable(gridline_tests_j177 tests/test_j177.cpp)
 target_link_libraries(gridline_tests_j177 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j177 PRIVATE tests src)
 target_compile_options(gridline_tests_j177 PRIVATE ${GL_WARN})
-add_test(NAME j177_flp_clip_time COMMAND gridline_tests_j177 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j177_flp_clip_time COMMAND gridline_tests_j177 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-167: the project loader's progress / cancel model (reading, samples, plugins, cancel at each phase).
 # K-42: opening projects from web and network drives (zip streaming, the local cache, stalled and
 # failing reads, cancel, no folder walks).
@@ -1119,13 +1138,13 @@ add_executable(gridline_tests_k42 tests/test_k42.cpp)
 target_link_libraries(gridline_tests_k42 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k42 PRIVATE tests src)
 target_compile_options(gridline_tests_k42 PRIVATE ${GL_WARN})
-add_test(NAME k42_web_drives COMMAND gridline_tests_k42 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k42_web_drives COMMAND gridline_tests_k42 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k42_web_drives PROPERTIES TIMEOUT 120)
 add_executable(gridline_tests_k44 tests/test_k44.cpp)
 target_link_libraries(gridline_tests_k44 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k44 PRIVATE tests src)
 target_compile_options(gridline_tests_k44 PRIVATE ${GL_WARN})
-add_test(NAME k44_zip_holds_everything COMMAND gridline_tests_k44 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k44_zip_holds_everything COMMAND gridline_tests_k44 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k44_zip_holds_everything PROPERTIES TIMEOUT 300)
 
 # K-45: the unpacked project cache: local archives, close, sweep, limit, Clear cache.
@@ -1133,50 +1152,50 @@ add_executable(gridline_tests_k45 tests/test_k45.cpp)
 target_link_libraries(gridline_tests_k45 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k45 PRIVATE tests src)
 target_compile_options(gridline_tests_k45 PRIVATE ${GL_WARN})
-add_test(NAME k45_unpacked_cache COMMAND gridline_tests_k45 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k45_unpacked_cache COMMAND gridline_tests_k45 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 
 add_executable(gridline_tests_q18 tests/test_q18.cpp)
 target_link_libraries(gridline_tests_q18 PRIVATE gridline_core)
 target_include_directories(gridline_tests_q18 PRIVATE tests src)
 target_compile_options(gridline_tests_q18 PRIVATE ${GL_WARN})
-add_test(NAME q18_first_block COMMAND gridline_tests_q18 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME q18_first_block COMMAND gridline_tests_q18 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k45_unpacked_cache PROPERTIES TIMEOUT 180)
 
 add_executable(gridline_tests_j167 tests/test_j167.cpp)
 target_link_libraries(gridline_tests_j167 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j167 PRIVATE tests src)
 target_compile_options(gridline_tests_j167 PRIVATE ${GL_WARN})
-add_test(NAME j167_project_load COMMAND gridline_tests_j167 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j167_project_load COMMAND gridline_tests_j167 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-166: imported Slicex chops (order, keys, names, ends) play and export exactly in Kerf.
 add_executable(gridline_tests_j166 tests/test_j166.cpp)
 target_link_libraries(gridline_tests_j166 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j166 PRIVATE tests src)
 target_compile_options(gridline_tests_j166 PRIVATE ${GL_WARN})
-add_test(NAME j166_slicex_chops COMMAND gridline_tests_j166 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j166_slicex_chops COMMAND gridline_tests_j166 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-176: Slicex states with long sample paths (0xFF + u32 length) and hundreds of regions reach Kerf.
 add_executable(gridline_tests_j176 tests/test_j176.cpp)
 target_link_libraries(gridline_tests_j176 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j176 PRIVATE tests src)
 target_compile_options(gridline_tests_j176 PRIVATE ${GL_WARN})
-add_test(NAME j176_slicex_long_path COMMAND gridline_tests_j176 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j176_slicex_long_path COMMAND gridline_tests_j176 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-180: a note's fine pitch (and channel / master pitch) tunes key-mapped instruments without moving the key.
 add_executable(gridline_tests_j180 tests/test_j180.cpp)
 target_link_libraries(gridline_tests_j180 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j180 PRIVATE tests src)
 target_compile_options(gridline_tests_j180 PRIVATE ${GL_WARN})
-add_test(NAME j180_note_fine_pitch COMMAND gridline_tests_j180 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j180_note_fine_pitch COMMAND gridline_tests_j180 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-182: Kerf's time and marker settings: snap sizes, nudging, bars:beats ruler, names, state round trips.
 add_executable(gridline_tests_j182 tests/test_j182.cpp)
 target_link_libraries(gridline_tests_j182 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j182 PRIVATE tests src)
 target_compile_options(gridline_tests_j182 PRIVATE ${GL_WARN})
-add_test(NAME j182_kerf_time_markers COMMAND gridline_tests_j182 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j182_kerf_time_markers COMMAND gridline_tests_j182 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-190: Kerf slices on the beat grid (synthetic loops: tempos, pickup, drift, 3/4, triplets, fallback, state, FL export).
 add_executable(gridline_tests_j190 tests/test_j190.cpp)
 target_link_libraries(gridline_tests_j190 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j190 PRIVATE tests src)
 target_compile_options(gridline_tests_j190 PRIVATE ${GL_WARN})
-add_test(NAME j190_kerf_beat_grid COMMAND gridline_tests_j190 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j190_kerf_beat_grid COMMAND gridline_tests_j190 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(j190_kerf_beat_grid PROPERTIES TIMEOUT 600)
 
 # J-193: stretched clips follow the tempo; unstretched clips keep their audio (their border follows).
@@ -1184,7 +1203,7 @@ add_executable(gridline_tests_j193 tests/test_j193.cpp)
 target_link_libraries(gridline_tests_j193 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j193 PRIVATE tests src)
 target_compile_options(gridline_tests_j193 PRIVATE ${GL_WARN})
-add_test(NAME j193_tempo_follow COMMAND gridline_tests_j193 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j193_tempo_follow COMMAND gridline_tests_j193 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(j193_tempo_follow PROPERTIES TIMEOUT 600)
 # J-192: Import from URL (core/UrlImport.h, core/MediaTools.h) with a fake yt-dlp / ffmpeg: never the network.
 add_executable(gridline_fake_media_tool tests/fake_media_tool.cpp)
@@ -1194,7 +1213,7 @@ target_link_libraries(gridline_tests_urlimport PRIVATE gridline_core)
 target_include_directories(gridline_tests_urlimport PRIVATE tests src)
 target_compile_options(gridline_tests_urlimport PRIVATE ${GL_WARN})
 add_dependencies(gridline_tests_urlimport gridline_fake_media_tool)
-add_test(NAME j192_import_url COMMAND gridline_tests_urlimport $<TARGET_FILE:gridline_fake_media_tool> WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j192_import_url COMMAND gridline_tests_urlimport $<TARGET_FILE:gridline_fake_media_tool> WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(j192_import_url PROPERTIES TIMEOUT 300)
 # J-109: Stop releases every sound outside the song; Stop twice (panic) silences tails too.
 add_executable(gridline_tests_j109 tests/test_j109.cpp)
@@ -1215,81 +1234,81 @@ if(GL_HAVE_BACKTRACE)
 endif()
 target_include_directories(gridline_tests_j109 PRIVATE tests src)
 target_compile_options(gridline_tests_j109 PRIVATE ${GL_WARN})
-add_test(NAME j109_stop_sound COMMAND gridline_tests_j109 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j109_stop_sound COMMAND gridline_tests_j109 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-110: plugins' own play / run states (Seltmann's pattern, one-shots, Shuttle, Loupe) follow Stop.
 add_executable(gridline_tests_j110 tests/test_j110.cpp)
 target_link_libraries(gridline_tests_j110 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j110 PRIVATE tests src)
 target_compile_options(gridline_tests_j110 PRIVATE ${GL_WARN})
-add_test(NAME j110_play_state COMMAND gridline_tests_j110 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j110_play_state COMMAND gridline_tests_j110 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-112: Play while the transport is stopped and a plugin plays on its own stops that playback first.
 add_executable(gridline_tests_j112 tests/test_j112.cpp)
 target_link_libraries(gridline_tests_j112 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j112 PRIVATE tests src)
 target_compile_options(gridline_tests_j112 PRIVATE ${GL_WARN})
-add_test(NAME j112_play_stops_plugins COMMAND gridline_tests_j112 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j112_play_stops_plugins COMMAND gridline_tests_j112 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-113: detachable windows: saved positions recovered onto the monitors, re-anchored, title bars kept reachable.
 add_executable(gridline_tests_j113 tests/test_j113.cpp)
 target_include_directories(gridline_tests_j113 PRIVATE tests src)
 target_compile_options(gridline_tests_j113 PRIVATE ${GL_WARN})
-add_test(NAME j113_window_placement COMMAND gridline_tests_j113 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j113_window_placement COMMAND gridline_tests_j113 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-117: the elastic boundary of floating windows inside the main window (core/WindowRubber.h).
 add_executable(gridline_tests_j117 tests/test_j117.cpp src/core/SmoothScroll.cpp)
 target_include_directories(gridline_tests_j117 PRIVATE tests src)
 target_compile_options(gridline_tests_j117 PRIVATE ${GL_WARN})
-add_test(NAME j117_window_rubber COMMAND gridline_tests_j117 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j117_window_rubber COMMAND gridline_tests_j117 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-118: the playlist's clip brush: a clicked clip paints as it is (engine/PlaylistTools.h).
 add_executable(gridline_tests_j118 tests/test_j118.cpp)
 target_link_libraries(gridline_tests_j118 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j118 PRIVATE tests src)
 target_compile_options(gridline_tests_j118 PRIVATE ${GL_WARN})
-add_test(NAME j118_paint_brush COMMAND gridline_tests_j118 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j118_paint_brush COMMAND gridline_tests_j118 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-91 (GitHub issue #1): system interface scale, plugin keys on X11 / Windows, Auto Pan pad, motion switches.
 add_executable(gridline_tests_j91 tests/test_j91.cpp)
 target_link_libraries(gridline_tests_j91 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j91 PRIVATE tests src)
 target_compile_options(gridline_tests_j91 PRIVATE ${GL_WARN})
-add_test(NAME j91 COMMAND gridline_tests_j91 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j91 COMMAND gridline_tests_j91 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-19 / K-15: plugin editor sizes (zoom rules, remembered per type) and Loupe's layout per dock spot.
 add_executable(gridline_tests_k19 tests/test_k19.cpp)
 target_link_libraries(gridline_tests_k19 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k19 PRIVATE tests src)
 target_compile_options(gridline_tests_k19 PRIVATE ${GL_WARN})
-add_test(NAME k19_editor_size COMMAND gridline_tests_k19 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k19_editor_size COMMAND gridline_tests_k19 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-147: magnetic knob detents (soft magnets at the divisions of a synced time knob) and the
 # plugin window fit rules.
 add_executable(gridline_tests_k147 tests/test_k147.cpp)
 target_link_libraries(gridline_tests_k147 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k147 PRIVATE tests src)
 target_compile_options(gridline_tests_k147 PRIVATE ${GL_WARN})
-add_test(NAME k147_magnets COMMAND gridline_tests_k147 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k147_magnets COMMAND gridline_tests_k147 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-25: per-note pitch bend lines: shape, save / load, undo, note edits, playback (measured pitch,
 # per voice, block sizes, MIDI Out), MIDI file export / import, FL export report.
 add_executable(gridline_tests_k25 tests/test_k25.cpp)
 target_link_libraries(gridline_tests_k25 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k25 PRIVATE tests src)
 target_compile_options(gridline_tests_k25 PRIVATE ${GL_WARN})
-add_test(NAME k25_pitch_bend COMMAND gridline_tests_k25 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k25_pitch_bend COMMAND gridline_tests_k25 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-28: bend curve shapes and amounts, FL export as slide notes (pitch tracks compared by ear).
 add_executable(gridline_tests_k28 tests/test_k28.cpp)
 target_link_libraries(gridline_tests_k28 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k28 PRIVATE tests src)
 target_compile_options(gridline_tests_k28 PRIVATE ${GL_WARN})
-add_test(NAME k28_bend_curves_fl COMMAND gridline_tests_k28 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k28_bend_curves_fl COMMAND gridline_tests_k28 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-22: channel rack steps in the piano roll: the view, the first edit's conversion (one undo step),
 # playback identical before / after (rendered audio), save / load, FL export / import round trip.
 add_executable(gridline_tests_k22 tests/test_k22.cpp)
 target_link_libraries(gridline_tests_k22 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k22 PRIVATE tests src)
 target_compile_options(gridline_tests_k22 PRIVATE ${GL_WARN})
-add_test(NAME k22_steps_in_piano_roll COMMAND gridline_tests_k22 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k22_steps_in_piano_roll COMMAND gridline_tests_k22 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 
 # K-47: exports with progress and Cancel, no partial target; a clipboard that holds a closed project's copy.
 add_executable(gridline_tests_k49 tests/test_k49.cpp)
 target_link_libraries(gridline_tests_k49 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k49 PRIVATE tests src)
 target_compile_options(gridline_tests_k49 PRIVATE ${GL_WARN})
-add_test(NAME k49_fl_tempo_clips_and_stretched_clips COMMAND gridline_tests_k49 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k49_fl_tempo_clips_and_stretched_clips COMMAND gridline_tests_k49 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k49_fl_tempo_clips_and_stretched_clips PROPERTIES TIMEOUT 300)
 
 # K-58: FL audio clips on a channel that resamples hold their rate and pitch under tempo automation.
@@ -1297,28 +1316,28 @@ add_executable(gridline_tests_k58 tests/test_k58.cpp)
 target_link_libraries(gridline_tests_k58 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k58 PRIVATE tests src)
 target_compile_options(gridline_tests_k58 PRIVATE ${GL_WARN})
-add_test(NAME k58_fl_resampled_clips_under_tempo_automation COMMAND gridline_tests_k58 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k58_fl_resampled_clips_under_tempo_automation COMMAND gridline_tests_k58 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k58_fl_resampled_clips_under_tempo_automation PROPERTIES TIMEOUT 300)
 
 add_executable(gridline_tests_k62 tests/test_k62.cpp)
 target_link_libraries(gridline_tests_k62 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k62 PRIVATE tests src)
 target_compile_options(gridline_tests_k62 PRIVATE ${GL_WARN})
-add_test(NAME k62_convolver_against_fl COMMAND gridline_tests_k62 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k62_convolver_against_fl COMMAND gridline_tests_k62 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k62_convolver_against_fl PROPERTIES TIMEOUT 300)
 
 add_executable(gridline_tests_k63 tests/test_k63.cpp)
 target_link_libraries(gridline_tests_k63 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k63 PRIVATE tests src)
 target_compile_options(gridline_tests_k63 PRIVATE ${GL_WARN})
-add_test(NAME k63_fl_sampler_note_level COMMAND gridline_tests_k63 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k63_fl_sampler_note_level COMMAND gridline_tests_k63 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k63_fl_sampler_note_level PROPERTIES TIMEOUT 300)
 
 add_executable(gridline_tests_k64 tests/test_k64.cpp)
 target_link_libraries(gridline_tests_k64 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k64 PRIVATE tests src)
 target_compile_options(gridline_tests_k64 PRIVATE ${GL_WARN})
-add_test(NAME k64_smooth_playback_and_solo COMMAND gridline_tests_k64 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k64_smooth_playback_and_solo COMMAND gridline_tests_k64 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k64_smooth_playback_and_solo PROPERTIES TIMEOUT 300)
 
 # K-50: the pitch of FL audio clips: times beyond the sampler's range, sources far above the engine's rate.
@@ -1326,14 +1345,14 @@ add_executable(gridline_tests_k50 tests/test_k50.cpp)
 target_link_libraries(gridline_tests_k50 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k50 PRIVATE tests src)
 target_compile_options(gridline_tests_k50 PRIVATE ${GL_WARN})
-add_test(NAME k50_fl_clip_pitch COMMAND gridline_tests_k50 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k50_fl_clip_pitch COMMAND gridline_tests_k50 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k50_fl_clip_pitch PROPERTIES TIMEOUT 300)
 
 add_executable(gridline_tests_k47 tests/test_k47.cpp)
 target_link_libraries(gridline_tests_k47 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k47 PRIVATE tests src)
 target_compile_options(gridline_tests_k47 PRIVATE ${GL_WARN})
-add_test(NAME k47_exports_and_clipboard COMMAND gridline_tests_k47 ${CMAKE_BINARY_DIR}/k47_units WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k47_exports_and_clipboard COMMAND gridline_tests_k47 ${GRIDLINE_BUILD_DIR}/k47_units WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k47_exports_and_clipboard PROPERTIES TIMEOUT 180)
 # K-133: project bones over an earlier export replace nothing until all is written; the render
 # worker's sign of life; the sound fixes measured against the reference renders.
@@ -1341,21 +1360,21 @@ add_executable(gridline_tests_k133 tests/test_k133.cpp)
 target_link_libraries(gridline_tests_k133 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k133 PRIVATE tests src)
 target_compile_options(gridline_tests_k133 PRIVATE ${GL_WARN})
-add_test(NAME k133_recovery_and_sound COMMAND gridline_tests_k133 ${CMAKE_BINARY_DIR}/k133_units WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k133_recovery_and_sound COMMAND gridline_tests_k133 ${GRIDLINE_BUILD_DIR}/k133_units WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 set_tests_properties(k133_recovery_and_sound PROPERTIES TIMEOUT 300)
 # K-75: Chromebook / Android terminal Linux environments (detection, audio defaults), GLSL for OpenGL 2.x.
 add_executable(gridline_tests_k75 tests/test_k75.cpp)
 target_link_libraries(gridline_tests_k75 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k75 PRIVATE tests src)
 target_compile_options(gridline_tests_k75 PRIVATE ${GL_WARN})
-add_test(NAME k75_chromeos COMMAND gridline_tests_k75 ${CMAKE_BINARY_DIR}/k75_units WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k75_chromeos COMMAND gridline_tests_k75 ${GRIDLINE_BUILD_DIR}/k75_units WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 
 # K-39: crash reports. The probe has debug information of its own: the symbol test needs no debug build of the app.
 add_executable(gridline_tests_k39 tests/test_k39.cpp)
 target_link_libraries(gridline_tests_k39 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k39 PRIVATE tests src)
 target_compile_options(gridline_tests_k39 PRIVATE ${GL_WARN})
-add_test(NAME k39_crash_units COMMAND gridline_tests_k39 ${CMAKE_BINARY_DIR}/k39_units WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k39_crash_units COMMAND gridline_tests_k39 ${GRIDLINE_BUILD_DIR}/k39_units WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_crash_probe tests/crash_probe.cpp)
 target_link_libraries(gridline_crash_probe PRIVATE gridline_core)
 target_include_directories(gridline_crash_probe PRIVATE tests src)
@@ -1366,62 +1385,62 @@ endif()
 find_program(GRIDLINE_PYTHON3 NAMES python3 python)
 if(GRIDLINE_PYTHON3)
   add_test(NAME k39_crash_symbols_and_false_alarms
-           COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:gridline_crash_probe> -DTOOL=${CMAKE_SOURCE_DIR}/tools/crash_symbolize.py -DPYTHON=${GRIDLINE_PYTHON3}
-                   -DOUT=${CMAKE_BINARY_DIR}/k39_probe -P ${CMAKE_SOURCE_DIR}/tests/k39_crash_probe.cmake
-           WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+           COMMAND ${CMAKE_COMMAND} -DPROBE=$<TARGET_FILE:gridline_crash_probe> -DTOOL=${GRIDLINE_ROOT_DIR}/tools/crash_symbolize.py -DPYTHON=${GRIDLINE_PYTHON3}
+                   -DOUT=${GRIDLINE_BUILD_DIR}/k39_probe -P ${GRIDLINE_ROOT_DIR}/tests/k39_crash_probe.cmake
+           WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
   set_tests_properties(k39_crash_symbols_and_false_alarms PROPERTIES TIMEOUT 200)
 endif()
 add_executable(gridline_tests_k29 tests/test_k29.cpp)
 target_link_libraries(gridline_tests_k29 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k29 PRIVATE tests src)
 target_compile_options(gridline_tests_k29 PRIVATE ${GL_WARN})
-add_test(NAME k29_bend_shapes_played COMMAND gridline_tests_k29 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k29_bend_shapes_played COMMAND gridline_tests_k29 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_clip_sources tests/test_clip_sources.cpp)
 target_link_libraries(gridline_tests_clip_sources PRIVATE gridline_core)
 target_include_directories(gridline_tests_clip_sources PRIVATE tests src)
 target_compile_options(gridline_tests_clip_sources PRIVATE ${GL_WARN})
-add_test(NAME clip_sources COMMAND gridline_tests_clip_sources WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME clip_sources COMMAND gridline_tests_clip_sources WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-173: automation clips inside patterns (model, playback, undo, files, FL / MIDI, collaboration).
 add_executable(gridline_tests_pattern_automation_clips tests/test_pattern_automation_clips.cpp)
 target_link_libraries(gridline_tests_pattern_automation_clips PRIVATE gridline_core)
 target_include_directories(gridline_tests_pattern_automation_clips PRIVATE tests src)
 target_compile_options(gridline_tests_pattern_automation_clips PRIVATE ${GL_WARN})
-add_test(NAME pattern_automation_clips COMMAND gridline_tests_pattern_automation_clips WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME pattern_automation_clips COMMAND gridline_tests_pattern_automation_clips WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # J-56: playlist track modes (PL-08), MTC / clock receive and chase (MI-02), master chain + loudness (RN-09).
 add_executable(gridline_tests_chop tests/test_chop.cpp)
 target_link_libraries(gridline_tests_chop PRIVATE gridline_core)
 target_include_directories(gridline_tests_chop PRIVATE tests)
 target_compile_options(gridline_tests_chop PRIVATE ${GL_WARN})
-add_test(NAME chop COMMAND gridline_tests_chop WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME chop COMMAND gridline_tests_chop WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # Q-1 / Q-3: looping pattern clips, Shift+drag copies (core side).
 add_executable(gridline_tests_q1 tests/test_q1_loops.cpp)
 target_link_libraries(gridline_tests_q1 PRIVATE gridline_core)
 target_include_directories(gridline_tests_q1 PRIVATE tests)
 target_compile_options(gridline_tests_q1 PRIVATE ${GL_WARN})
-add_test(NAME q1_loops COMMAND gridline_tests_q1 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME q1_loops COMMAND gridline_tests_q1 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-114: clips loop only when asked (per clip: pattern, audio, automation); old projects and FL keep playing as before.
 add_executable(gridline_tests_k114 tests/test_k114.cpp)
 target_link_libraries(gridline_tests_k114 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k114 PRIVATE tests)
 target_compile_options(gridline_tests_k114 PRIVATE ${GL_WARN})
-add_test(NAME k114_clip_loops COMMAND gridline_tests_k114 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k114_clip_loops COMMAND gridline_tests_k114 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-140: a cut clip loops from its cut point (the part it showed repeats).
 add_executable(gridline_tests_k140 tests/test_k140.cpp)
 target_link_libraries(gridline_tests_k140 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k140 PRIVATE tests)
 target_compile_options(gridline_tests_k140 PRIVATE ${GL_WARN})
-add_test(NAME k140_cut_loops COMMAND gridline_tests_k140 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k140_cut_loops COMMAND gridline_tests_k140 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 # K-85: sampler start / end handles trim audio clips; warp markers.
 add_executable(gridline_tests_k85 tests/test_k85.cpp)
 target_link_libraries(gridline_tests_k85 PRIVATE gridline_core)
 target_include_directories(gridline_tests_k85 PRIVATE tests src)
 target_compile_options(gridline_tests_k85 PRIVATE ${GL_WARN})
-add_test(NAME k85_clip_trim_warp COMMAND gridline_tests_k85 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME k85_clip_trim_warp COMMAND gridline_tests_k85 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_j56 tests/test_j56.cpp)
 target_link_libraries(gridline_tests_j56 PRIVATE gridline_core)
 target_include_directories(gridline_tests_j56 PRIVATE tests)
 target_compile_options(gridline_tests_j56 PRIVATE ${GL_WARN})
-add_test(NAME j56 COMMAND gridline_tests_j56 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME j56 COMMAND gridline_tests_j56 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 
 # J-21 QA: mutation fuzzer over the file readers (tests/fuzz/fuzz_main.cpp; long runs by hand,
 # a short smoke run per reader under ctest) and the cross-feature regression tests.
@@ -1432,14 +1451,14 @@ add_executable(gridline_tests_qa tests/test_qa.cpp)
 target_link_libraries(gridline_tests_qa PRIVATE gridline_core)
 target_include_directories(gridline_tests_qa PRIVATE tests)
 target_compile_options(gridline_tests_qa PRIVATE ${GL_WARN})
-add_test(NAME qa COMMAND gridline_tests_qa WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME qa COMMAND gridline_tests_qa WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 add_executable(gridline_tests_qa_cross tests/test_qa_cross.cpp)
 target_link_libraries(gridline_tests_qa_cross PRIVATE gridline_core)
 target_include_directories(gridline_tests_qa_cross PRIVATE tests)
 target_compile_options(gridline_tests_qa_cross PRIVATE ${GL_WARN})
-add_test(NAME qa_cross COMMAND gridline_tests_qa_cross WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME qa_cross COMMAND gridline_tests_qa_cross WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 foreach(ft flp flp-export fst project sample midi browser-index zip lua lua-project lua-audio song-flp fx-preset)
-  add_test(NAME fuzz_${ft} COMMAND gridline_fuzz ${ft} 3 WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  add_test(NAME fuzz_${ft} COMMAND gridline_fuzz ${ft} 3 WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 endforeach()
 
 # One test executable per pack: tests/packs/test_<pack>.cpp
@@ -1448,8 +1467,10 @@ foreach(t ${GRIDLINE_PACK_TESTS})
   get_filename_component(tn ${t} NAME_WE)
   add_executable(gridline_${tn} ${t})
   target_link_libraries(gridline_${tn} PRIVATE gridline_core)
-  add_test(NAME ${tn} COMMAND gridline_${tn} WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME ${tn} COMMAND gridline_${tn} WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 endforeach()
+
+endif()  # GRIDLINE_ANDROID
 
 # ---- desktop application (SDL2 + OpenGL 3 + Dear ImGui) ----
 # GRIDLINE_BUNDLED_SDL2=ON builds SDL2 from source as a static library (Windows, the macOS
@@ -1485,7 +1506,7 @@ if(NOT SDL2_FOUND)
 endif()
 find_package(OpenGL QUIET)
 
-if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
+if(NOT GRIDLINE_ANDROID AND (SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
   # Dear ImGui core + OpenGL 3 renderer (no window system: the plugin build, PH-09),
   # and the SDL2 platform backend on top for the application.
   add_library(imgui_core STATIC
@@ -1575,20 +1596,20 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
   # build time and rasterised by nanosvg (zlib, vendored unmodified in third_party/nanosvg) into an
   # alpha atlas at the exact device size (src/app/icons).
   file(GLOB GRIDLINE_UI_SVGS CONFIGURE_DEPENDS assets/icons/ui/*.svg)
-  set(GRIDLINE_ICON_DATA ${CMAKE_BINARY_DIR}/generated/IconData.cpp)
+  set(GRIDLINE_ICON_DATA ${GRIDLINE_BUILD_DIR}/generated/IconData.cpp)
   add_custom_command(OUTPUT ${GRIDLINE_ICON_DATA}
-    COMMAND ${CMAKE_COMMAND} -DICON_DIR=${CMAKE_SOURCE_DIR}/assets/icons/ui -DOUT=${GRIDLINE_ICON_DATA}
-            -P ${CMAKE_SOURCE_DIR}/cmake/EmbedIcons.cmake
-    DEPENDS ${GRIDLINE_UI_SVGS} ${CMAKE_SOURCE_DIR}/cmake/EmbedIcons.cmake
+    COMMAND ${CMAKE_COMMAND} -DICON_DIR=${GRIDLINE_ROOT_DIR}/assets/icons/ui -DOUT=${GRIDLINE_ICON_DATA}
+            -P ${GRIDLINE_ROOT_DIR}/cmake/EmbedIcons.cmake
+    DEPENDS ${GRIDLINE_UI_SVGS} ${GRIDLINE_ROOT_DIR}/cmake/EmbedIcons.cmake
     COMMENT "Embedding interface icons")
   # J-130: plugin wordmarks (assets/wordmarks/*.svg, made by tools/wordmarks/make_wordmarks.py),
   # embedded the same way and rasterised per colour role at the exact device height.
   file(GLOB GRIDLINE_WORDMARK_SVGS CONFIGURE_DEPENDS assets/wordmarks/*.svg)
-  set(GRIDLINE_WORDMARK_DATA ${CMAKE_BINARY_DIR}/generated/WordmarkData.cpp)
+  set(GRIDLINE_WORDMARK_DATA ${GRIDLINE_BUILD_DIR}/generated/WordmarkData.cpp)
   add_custom_command(OUTPUT ${GRIDLINE_WORDMARK_DATA}
-    COMMAND ${CMAKE_COMMAND} -DWORDMARK_DIR=${CMAKE_SOURCE_DIR}/assets/wordmarks -DOUT=${GRIDLINE_WORDMARK_DATA}
-            -P ${CMAKE_SOURCE_DIR}/cmake/EmbedWordmarks.cmake
-    DEPENDS ${GRIDLINE_WORDMARK_SVGS} ${CMAKE_SOURCE_DIR}/cmake/EmbedWordmarks.cmake
+    COMMAND ${CMAKE_COMMAND} -DWORDMARK_DIR=${GRIDLINE_ROOT_DIR}/assets/wordmarks -DOUT=${GRIDLINE_WORDMARK_DATA}
+            -P ${GRIDLINE_ROOT_DIR}/cmake/EmbedWordmarks.cmake
+    DEPENDS ${GRIDLINE_WORDMARK_SVGS} ${GRIDLINE_ROOT_DIR}/cmake/EmbedWordmarks.cmake
     COMMENT "Embedding plugin wordmarks")
   add_library(gridline_nanosvg OBJECT src/app/icons/NanoSvgImpl.cpp)
   target_compile_options(gridline_nanosvg PRIVATE ${GL_NOWARN})  # vendored code
@@ -1605,7 +1626,7 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
   target_link_libraries(gridline_tests_icons PRIVATE imgui_core)
   target_include_directories(gridline_tests_icons PRIVATE src tests)
   target_compile_options(gridline_tests_icons PRIVATE ${GL_WARN})
-  add_test(NAME q13_icons COMMAND gridline_tests_icons WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME q13_icons COMMAND gridline_tests_icons WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
   # K-24: busy windows past 65535 vertices draw intact without renderer vertex offsets (GL 3.0/3.1).
   add_executable(gridline_tests_draw_index tests/test_draw_index.cpp)
   target_link_libraries(gridline_tests_draw_index PRIVATE imgui_core)
@@ -1617,51 +1638,51 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
   target_link_libraries(gridline_tests_wordmarks PRIVATE imgui_core gridline_core)
   target_include_directories(gridline_tests_wordmarks PRIVATE src tests)
   target_compile_options(gridline_tests_wordmarks PRIVATE ${GL_WARN})
-  add_test(NAME j130_wordmarks COMMAND gridline_tests_wordmarks WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME j130_wordmarks COMMAND gridline_tests_wordmarks WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
 
   # J-54: dialog layout checks, headless Dear ImGui (no window, no renderer).
   add_executable(gridline_tests_dialog_layout tests/test_dialog_layout.cpp src/app/DialogLayout.cpp src/app/Theme.cpp src/core/SmoothScroll.cpp)
   target_link_libraries(gridline_tests_dialog_layout PRIVATE imgui)
   target_include_directories(gridline_tests_dialog_layout PRIVATE src tests)
   target_compile_options(gridline_tests_dialog_layout PRIVATE ${GL_WARN})
-  add_test(NAME dialog_layout COMMAND gridline_tests_dialog_layout WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME dialog_layout COMMAND gridline_tests_dialog_layout WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
   # J-55: theme page settings (mode, accent / role colours, contrast, brightness), headless.
   add_executable(gridline_tests_theme_settings tests/test_theme_settings.cpp src/app/Theme.cpp src/app/ThemeSettings.cpp)
   target_link_libraries(gridline_tests_theme_settings PRIVATE imgui gridline_core)
   target_include_directories(gridline_tests_theme_settings PRIVATE src tests)
   target_compile_options(gridline_tests_theme_settings PRIVATE ${GL_WARN})
-  add_test(NAME theme_settings COMMAND gridline_tests_theme_settings WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  add_test(NAME theme_settings COMMAND gridline_tests_theme_settings WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
   # J-137: the Theme page's control style cards fit, wrap and keep their previews whole, headless.
   add_executable(gridline_tests_theme_layout tests/test_theme_layout.cpp)
   target_include_directories(gridline_tests_theme_layout PRIVATE src tests)
   target_compile_options(gridline_tests_theme_layout PRIVATE ${GL_WARN})
-  add_test(NAME j137_theme_layout COMMAND gridline_tests_theme_layout WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  add_test(NAME j137_theme_layout COMMAND gridline_tests_theme_layout WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
   # J-139: faders and sliders centred on their track in every control style, headless.
   add_executable(gridline_tests_fader_centre tests/test_fader_centre.cpp)
   target_include_directories(gridline_tests_fader_centre PRIVATE src tests)
   target_compile_options(gridline_tests_fader_centre PRIVATE ${GL_WARN})
-  add_test(NAME j139_fader_centre COMMAND gridline_tests_fader_centre WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  add_test(NAME j139_fader_centre COMMAND gridline_tests_fader_centre WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
 
   # The interface (every window and editor) is compiled once and used by the
   # application and by the plugin build (PH-09). main.cpp and PluginWindow.cpp
   # (SDL windows), Viewports.cpp (J-113: detached windows) and LiveResize.cpp (J-116) belong to the application only.
   file(GLOB GRIDLINE_APP_SRC CONFIGURE_DEPENDS src/app/*.cpp src/packs/RegistryUi.cpp src/packs/*/*_ui.cpp)
-  list(REMOVE_ITEM GRIDLINE_APP_SRC ${CMAKE_SOURCE_DIR}/src/app/main.cpp ${CMAKE_SOURCE_DIR}/src/app/PluginWindow.cpp
-       ${CMAKE_SOURCE_DIR}/src/app/Viewports.cpp ${CMAKE_SOURCE_DIR}/src/app/LiveResize.cpp
-       ${CMAKE_SOURCE_DIR}/src/app/AppIcon.cpp ${CMAKE_SOURCE_DIR}/src/app/AppIconImage.cpp  # K-14: the program only
-       ${CMAKE_SOURCE_DIR}/src/app/GlRecovery.cpp ${CMAKE_SOURCE_DIR}/src/app/VideoDriver.cpp  # K-47: the program's own OpenGL context
-       ${CMAKE_SOURCE_DIR}/src/app/OpenDocuments.cpp)  # K-119: the program's SDL events
+  list(REMOVE_ITEM GRIDLINE_APP_SRC ${GRIDLINE_ROOT_DIR}/src/app/main.cpp ${GRIDLINE_ROOT_DIR}/src/app/PluginWindow.cpp
+       ${GRIDLINE_ROOT_DIR}/src/app/Viewports.cpp ${GRIDLINE_ROOT_DIR}/src/app/LiveResize.cpp
+       ${GRIDLINE_ROOT_DIR}/src/app/AppIcon.cpp ${GRIDLINE_ROOT_DIR}/src/app/AppIconImage.cpp  # K-14: the program only
+       ${GRIDLINE_ROOT_DIR}/src/app/GlRecovery.cpp ${GRIDLINE_ROOT_DIR}/src/app/VideoDriver.cpp  # K-47: the program's own OpenGL context
+       ${GRIDLINE_ROOT_DIR}/src/app/OpenDocuments.cpp)  # K-119: the program's SDL events
   add_library(gridline_ui OBJECT ${GRIDLINE_APP_SRC})
   target_link_libraries(gridline_ui PRIVATE gridline_core imgui_core rtmidi gridline_sdl_headers)
   target_compile_options(gridline_ui PRIVATE ${GL_WARN_LOOSE})
   set_target_properties(gridline_ui PROPERTIES POSITION_INDEPENDENT_CODE ON)
   # K-14: the application icon built into the program (every window's icon, AppIcon.h).
-  set(GRIDLINE_APP_ICON_DATA ${CMAKE_BINARY_DIR}/generated/AppIconData.cpp)
+  set(GRIDLINE_APP_ICON_DATA ${GRIDLINE_BUILD_DIR}/generated/AppIconData.cpp)
   add_custom_command(OUTPUT ${GRIDLINE_APP_ICON_DATA}
-    COMMAND ${CMAKE_COMMAND} -DICON_DIR=${CMAKE_SOURCE_DIR}/assets/icons -DSIZES=256,512 -DOUT=${GRIDLINE_APP_ICON_DATA}
-            -P ${CMAKE_SOURCE_DIR}/cmake/EmbedAppIcon.cmake
-    DEPENDS ${CMAKE_SOURCE_DIR}/assets/icons/gridline-app-256.png ${CMAKE_SOURCE_DIR}/assets/icons/gridline-app-512.png
-            ${CMAKE_SOURCE_DIR}/cmake/EmbedAppIcon.cmake
+    COMMAND ${CMAKE_COMMAND} -DICON_DIR=${GRIDLINE_ROOT_DIR}/assets/icons -DSIZES=256,512 -DOUT=${GRIDLINE_APP_ICON_DATA}
+            -P ${GRIDLINE_ROOT_DIR}/cmake/EmbedAppIcon.cmake
+    DEPENDS ${GRIDLINE_ROOT_DIR}/assets/icons/gridline-app-256.png ${GRIDLINE_ROOT_DIR}/assets/icons/gridline-app-512.png
+            ${GRIDLINE_ROOT_DIR}/cmake/EmbedAppIcon.cmake
     COMMENT "Embedding the application icon")
   add_library(gridline_appicon OBJECT src/app/AppIconImage.cpp ${GRIDLINE_APP_ICON_DATA})
   target_include_directories(gridline_appicon PRIVATE src/app)
@@ -1670,7 +1691,7 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
   target_link_libraries(gridline_tests_app_icon PRIVATE gridline_stbimage)
   target_include_directories(gridline_tests_app_icon PRIVATE src tests)
   target_compile_options(gridline_tests_app_icon PRIVATE ${GL_WARN})
-  add_test(NAME k14_app_icon COMMAND gridline_tests_app_icon WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME k14_app_icon COMMAND gridline_tests_app_icon WORKING_DIRECTORY ${GRIDLINE_ROOT_DIR})
   add_executable(gridline-app src/app/main.cpp src/app/PluginWindow.cpp src/app/Viewports.cpp src/app/LiveResize.cpp src/app/GlRecovery.cpp src/app/VideoDriver.cpp src/app/OpenDocuments.cpp $<TARGET_OBJECTS:gridline_ui> ${GRIDLINE_ICON_OBJS}
                               src/app/AppIcon.cpp $<TARGET_OBJECTS:gridline_appicon>)
   target_link_libraries(gridline-app PRIVATE gridline_core imgui rtmidi)
@@ -1680,7 +1701,7 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
   target_compile_options(gridline-app PRIVATE ${GL_WARN_LOOSE})
   # Run from the build tree: assets are found next to the source tree.
   if(GRIDLINE_DEV_ASSETS)
-    target_compile_definitions(gridline-app PRIVATE GRIDLINE_SOURCE_ASSETS="${CMAKE_SOURCE_DIR}/assets")
+    target_compile_definitions(gridline-app PRIVATE GRIDLINE_SOURCE_ASSETS="${GRIDLINE_ROOT_DIR}/assets")
   endif()
 
   # App icon (tools/make_app_icon.py): Gridline.icns for the macOS bundle, gridline-app-<size>.png
@@ -1688,12 +1709,12 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
   if(APPLE)
     # build/Gridline.app: a launchable bundle (Finder / Dock icon) whose executable is a hard
     # link to build/gridline-app, refreshed after every link. Assets resolve to the source tree.
-    set(GRIDLINE_APP_BUNDLE ${CMAKE_BINARY_DIR}/Gridline.app)
+    set(GRIDLINE_APP_BUNDLE ${GRIDLINE_BUILD_DIR}/Gridline.app)
     file(MAKE_DIRECTORY ${GRIDLINE_APP_BUNDLE}/Contents/MacOS ${GRIDLINE_APP_BUNDLE}/Contents/Resources)
     # K-119: the plist holds the file types Gridline opens (cmake/macos/Info.plist.in).
-    configure_file(${CMAKE_SOURCE_DIR}/cmake/macos/Info.plist.in ${GRIDLINE_APP_BUNDLE}/Contents/Info.plist @ONLY)
+    configure_file(${GRIDLINE_ROOT_DIR}/cmake/macos/Info.plist.in ${GRIDLINE_APP_BUNDLE}/Contents/Info.plist @ONLY)
     add_custom_command(TARGET gridline-app POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/assets/icons/Gridline.icns
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${GRIDLINE_ROOT_DIR}/assets/icons/Gridline.icns
               ${GRIDLINE_APP_BUNDLE}/Contents/Resources/Gridline.icns
       COMMAND ${CMAKE_COMMAND} -E rm -f ${GRIDLINE_APP_BUNDLE}/Contents/MacOS/gridline-app
       COMMAND ${CMAKE_COMMAND} -E create_hardlink $<TARGET_FILE:gridline-app> ${GRIDLINE_APP_BUNDLE}/Contents/MacOS/gridline-app
@@ -1706,14 +1727,14 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
     # inset::kMinInset px of its panel's edge (off-screen run; isolated config).
     # Hidden window: the desktop cursor cannot hover a control and show its readout.
     add_test(NAME editor_layout_audit
-             COMMAND gridline-app --hidden --layout-audit ${CMAKE_BINARY_DIR}/layout_audit --size 2400x1600
-                     --screenshot ${CMAKE_BINARY_DIR}/layout_audit/frame.ppm --frames 100000 --no-ui-sounds
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND gridline-app --hidden --layout-audit ${GRIDLINE_BUILD_DIR}/layout_audit --size 2400x1600
+                     --screenshot ${GRIDLINE_BUILD_DIR}/layout_audit/frame.ppm --frames 100000 --no-ui-sounds
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     # J-103: a failing exit fails the test (ctest checks the code); an abort message on the way out does too.
     # J-128: also fails on alignment findings above tests/alignment_baseline.tsv that
     # tests/alignment_allowlist.tsv does not justify (AlignCheck.h gate()).
     set_tests_properties(editor_layout_audit PROPERTIES ENVIRONMENT
-                         "GRIDLINE_CONFIG_HOME=${CMAKE_BINARY_DIR}/layout_audit_cfg;GRIDLINE_ALIGN_BASELINE=${CMAKE_SOURCE_DIR}/tests/alignment_baseline.tsv;GRIDLINE_ALIGN_ALLOW=${CMAKE_SOURCE_DIR}/tests/alignment_allowlist.tsv"
+                         "GRIDLINE_CONFIG_HOME=${GRIDLINE_BUILD_DIR}/layout_audit_cfg;GRIDLINE_ALIGN_BASELINE=${GRIDLINE_ROOT_DIR}/tests/alignment_baseline.tsv;GRIDLINE_ALIGN_ALLOW=${GRIDLINE_ROOT_DIR}/tests/alignment_allowlist.tsv"
                          TIMEOUT 1800  # about 630 s on an x86_64 CI runner; software-rendered arm64 takes longer
                          FAIL_REGULAR_EXPRESSION "terminating due to|mutex lock failed|libc\\+\\+abi")
 
@@ -1721,82 +1742,82 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
     foreach(style classic slate graphite hairline lumen)
       add_test(NAME j129_style_${style}
                COMMAND gridline-app --hidden --no-ui-sounds --no-update-check --look ${style} --make-thumbs --size 1600x1100
-                       --screenshot ${CMAKE_BINARY_DIR}/j129_style_${style}/frame.ppm --frames 100000
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                       --screenshot ${GRIDLINE_BUILD_DIR}/j129_style_${style}/frame.ppm --frames 100000
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(j129_style_${style} PROPERTIES
-                           ENVIRONMENT "GRIDLINE_CONFIG_HOME=${CMAKE_BINARY_DIR}/j129_style_${style};GRIDLINE_NO_PLUGIN_SCAN=1;GRIDLINE_HIDE_PLUGINS=all"
+                           ENVIRONMENT "GRIDLINE_CONFIG_HOME=${GRIDLINE_BUILD_DIR}/j129_style_${style};GRIDLINE_NO_PLUGIN_SCAN=1;GRIDLINE_HIDE_PLUGINS=all"
                            TIMEOUT 600 PASS_REGULAR_EXPRESSION "thumbnails: [1-9][0-9]* written"
                            FAIL_REGULAR_EXPRESSION "Assertion|assert|terminating due to|libc\\+\\+abi")
     endforeach()
 
     # J-78: clicks on a notification card never reach the playlist clip below it (hidden off-screen run).
     add_test(NAME j78_toast_click
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j78_toast_click -P ${CMAKE_SOURCE_DIR}/tests/j78_toast_click.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j78_toast_click -P ${GRIDLINE_ROOT_DIR}/tests/j78_toast_click.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j78_toast_click PROPERTIES TIMEOUT 300)
 
     # J-91: the transport buttons answer real (SDL) clicks at 100 / 150 / 200 % and the metronome swings.
     add_test(NAME j91_transport_click
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j91_transport_click
-                     -P ${CMAKE_SOURCE_DIR}/tests/j91_transport_click.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j91_transport_click
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j91_transport_click.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j91_transport_click PROPERTIES TIMEOUT 300)
     # J-216: automated and dev-layout runs never write the user's saved layout.
     add_test(NAME j216_layout_untouched
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j216_layout_untouched
-                     -P ${CMAKE_SOURCE_DIR}/tests/j216_layout_untouched.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j216_layout_untouched
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j216_layout_untouched.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j216_layout_untouched PROPERTIES TIMEOUT 300)
     # J-212: Stop clicked with the transport stopped (or a double-click) goes back to the beginning.
     add_test(NAME j212_stop_to_start
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j212_stop_to_start
-                     -P ${CMAKE_SOURCE_DIR}/tests/j212_stop_to_start.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j212_stop_to_start
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j212_stop_to_start.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j212_stop_to_start PROPERTIES TIMEOUT 480)
     # J-213: replacing the instrument of an open channel renames it and resets the plugin view's preset.
     add_test(NAME j213_replace_instrument_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j213_replace_instrument
-                     -P ${CMAKE_SOURCE_DIR}/tests/j213_replace_instrument.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j213_replace_instrument
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j213_replace_instrument.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j213_replace_instrument_app PROPERTIES TIMEOUT 240)
     # K-124 to K-127: Esc back to the playlist, a new instrument opens its editor, the rack LED's
     # right-click solo and the activity light before the steps (geometry at 100% and 200%).
     add_test(NAME k124_rack_and_keys_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k124_rack_and_keys
-                     -P ${CMAKE_SOURCE_DIR}/tests/k124_rack_and_keys.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k124_rack_and_keys
+                     -P ${GRIDLINE_ROOT_DIR}/tests/k124_rack_and_keys.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k124_rack_and_keys_app PROPERTIES TIMEOUT 600)
 
     # J-109: Stop releases preview keys, typed keys (also on focus loss) and the browser preview; Stop twice = panic.
     add_test(NAME j109_stop_sound_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DCLI=$<TARGET_FILE:gridline>
-                     -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json -DOUT=${CMAKE_BINARY_DIR}/j109_stop_sound
-                     -P ${CMAKE_SOURCE_DIR}/tests/j109_stop_sound.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json -DOUT=${GRIDLINE_BUILD_DIR}/j109_stop_sound
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j109_stop_sound.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j109_stop_sound_app PROPERTIES TIMEOUT 300)
 
     # J-83: wheel over a mixer gain fader: thin mixer scrolls, wide adjusts, Ctrl / click / momentum / live resize.
     add_test(NAME j83_mixer_wheel
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j83_mixer_wheel -P ${CMAKE_SOURCE_DIR}/tests/j83_mixer_wheel.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j83_mixer_wheel -P ${GRIDLINE_ROOT_DIR}/tests/j83_mixer_wheel.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j83_mixer_wheel PROPERTIES TIMEOUT 300)
 
     # J-84: channel rack with long patterns / narrow racks: knobs drawn, steps scroll, Q-15 wheel routing.
     add_test(NAME j84_rack_scroll
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j84_rack_scroll -P ${CMAKE_SOURCE_DIR}/tests/j84_rack_scroll.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j84_rack_scroll -P ${GRIDLINE_ROOT_DIR}/tests/j84_rack_scroll.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j84_rack_scroll PROPERTIES TIMEOUT 300)
 
     # K-4: auto scrolling switches: the playlist and the pattern editors (piano roll, channel rack) follow
     # playback only while theirs is on; manual scrolling while playing still works.
     add_test(NAME k4_follow
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k4_follow -P ${CMAKE_SOURCE_DIR}/tests/k4_follow.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k4_follow -P ${GRIDLINE_ROOT_DIR}/tests/k4_follow.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k4_follow PROPERTIES TIMEOUT 300)
 
     # K-24: the playlist zoom anchored at the pointer on both axes: Alt+wheel keeps the track under the
@@ -1804,273 +1825,273 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
     # fixed, Ctrl+wheel keeps its tick, the piano roll's Alt+wheel keeps its row, the vertical zoom is remembered.
     add_test(NAME k24_zoom_anchor
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_DEMO_JSON}
-                     -DSONG=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k24_zoom_anchor -P ${CMAKE_SOURCE_DIR}/tests/k24_zoom_anchor.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DSONG=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k24_zoom_anchor -P ${GRIDLINE_ROOT_DIR}/tests/k24_zoom_anchor.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k24_zoom_anchor PROPERTIES TIMEOUT 600)
 
     # K-12: the playlist track "+": a click opens its menu; an existing channel, a new instrument (a favourite)
     # and a new pattern on the track (clip place, piano roll on the track's channel), one undo step each; the
     # View switch hides it and is remembered; at 24 px tracks and 200 % it overlaps none of the header's parts.
     add_test(NAME k12_track_plus
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k12_track_plus -P ${CMAKE_SOURCE_DIR}/tests/k12_track_plus.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k12_track_plus -P ${GRIDLINE_ROOT_DIR}/tests/k12_track_plus.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k12_track_plus PROPERTIES TIMEOUT 600)
 
     # K-26: overlapping playlist clips: the clip beneath shows through the one on top, dimmed (pixels),
     # no shadow on it, grid lines one brightness through overlaps; a right-click there picks the top clip.
     add_test(NAME k26_clip_overlap
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k26_clip_overlap -P ${CMAKE_SOURCE_DIR}/tests/k26_clip_overlap.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k26_clip_overlap -P ${GRIDLINE_ROOT_DIR}/tests/k26_clip_overlap.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k26_clip_overlap PROPERTIES TIMEOUT 600)
 
     # J-98: Tideline's Split slider keeps its handle under the pointer at 100 / 150 / 200 % (SDL drags).
     add_test(NAME j98_slider_follow
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j98_slider_follow
-                     -P ${CMAKE_SOURCE_DIR}/tests/j98_slider_follow.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j98_slider_follow
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j98_slider_follow.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j98_slider_follow PROPERTIES TIMEOUT 300)
 
     # J-165: Tideline's trigger Source list: pick a channel (notes) and a mixer track (audio), undo.
     add_test(NAME j165_tideline_source
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j165_tideline_source
-                     -P ${CMAKE_SOURCE_DIR}/tests/j165_tideline_source.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j165_tideline_source
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j165_tideline_source.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j165_tideline_source PROPERTIES TIMEOUT 300)
 
     # J-178: Plasma's preset library: folder clicks (any depth) filter the list, presets select / open.
     add_test(NAME j178_plasma_library
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j178_plasma_library
-                     -P ${CMAKE_SOURCE_DIR}/tests/j178_plasma_library.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j178_plasma_library
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j178_plasma_library.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j178_plasma_library PROPERTIES TIMEOUT 300)
 
     # J-202: every page and view of Plasma's editor renders at 100 % and 150 % (no assert, no
     # overlapping text in Plasma's own layout check).
     add_test(NAME j202_plasma_pages
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j202_plasma_pages
-                     -P ${CMAKE_SOURCE_DIR}/tests/j202_plasma_pages.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j202_plasma_pages
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j202_plasma_pages.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j202_plasma_pages PROPERTIES TIMEOUT 600)
 
     # K-42: a zipped project on a "web drive" in the real app: frames keep coming while it reads,
     # nothing lands on the drive, the second open needs no read, offline opens the last copy, the
     # recent list survives a drive that has gone.
     add_test(NAME k42_web_drive_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DSOUNDS=${CMAKE_SOURCE_DIR}/assets/sounds -DOUT=${CMAKE_BINARY_DIR}/k42_web_drive
-                     -P ${CMAKE_SOURCE_DIR}/tests/k42_web_drive_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DSOUNDS=${GRIDLINE_ROOT_DIR}/assets/sounds -DOUT=${GRIDLINE_BUILD_DIR}/k42_web_drive
+                     -P ${GRIDLINE_ROOT_DIR}/tests/k42_web_drive_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k42_web_drive_app PROPERTIES TIMEOUT 300)
 
     # K-45: every zip unpacks into the cache, a closed local project's copy goes, a drive's stays, the
     # startup sweep, and the Clear cache control in Settings > Files.
     add_test(NAME k45_cache_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DSOUNDS=${CMAKE_SOURCE_DIR}/assets/sounds -DOUT=${CMAKE_BINARY_DIR}/k45_cache
-                     -P ${CMAKE_SOURCE_DIR}/tests/k45_cache_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DSOUNDS=${GRIDLINE_ROOT_DIR}/assets/sounds -DOUT=${GRIDLINE_BUILD_DIR}/k45_cache
+                     -P ${GRIDLINE_ROOT_DIR}/tests/k45_cache_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k45_cache_app PROPERTIES TIMEOUT 300)
 
     # J-167: opening a slow project through File > Open: the dialog closes at once, frames keep
     # coming, the loading window shows progress and the log, input is blocked, Esc cancels back to
     # the open project exactly; a finished load keeps its warnings on a card; a corrupt file says why.
     add_test(NAME j167_project_load_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DSOUNDS=${CMAKE_SOURCE_DIR}/assets/sounds -DOUT=${CMAKE_BINARY_DIR}/j167_project_load
-                     -P ${CMAKE_SOURCE_DIR}/tests/j167_project_load.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DSOUNDS=${GRIDLINE_ROOT_DIR}/assets/sounds -DOUT=${GRIDLINE_BUILD_DIR}/j167_project_load
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j167_project_load.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j167_project_load_app PROPERTIES TIMEOUT 300)
 
     # J-105: Convolver EQ / IR envelope point editing at 100 / 200 % (SDL drags): click adds one point, no painting, undo per gesture, save + load.
     add_test(NAME j105_conv_points
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j105_conv_points
-                     -P ${CMAKE_SOURCE_DIR}/tests/j105_conv_points.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j105_conv_points
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j105_conv_points.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j105_conv_points PROPERTIES TIMEOUT 600)
 
     # J-97: browser / external drops onto channel rack rows replace their content (routing, steps, notes kept), insert between rows, undo.
     add_test(NAME j97_rack_drop
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j97_rack_drop -P ${CMAKE_SOURCE_DIR}/tests/j97_rack_drop.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j97_rack_drop -P ${GRIDLINE_ROOT_DIR}/tests/j97_rack_drop.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j97_rack_drop PROPERTIES TIMEOUT 300)
 
     # J-173: automation clips in a pattern: the curves on the pattern's playlist clips (a
     # double-click opens one in the editor), the channel rack's clip rows, the view setting.
     add_test(NAME j173_pattern_auto_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j173_pattern_auto_app -P ${CMAKE_SOURCE_DIR}/tests/j173_pattern_auto_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j173_pattern_auto_app -P ${GRIDLINE_ROOT_DIR}/tests/j173_pattern_auto_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j173_pattern_auto_app PROPERTIES TIMEOUT 300)
 
     # K-0: "Make unique" from a playlist clip's menu on a pattern with piano roll notes keeps the app
     # running (a GitHub issue: the menu read the replaced song's pattern).
     add_test(NAME k0_make_unique_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k0_make_unique_app -P ${CMAKE_SOURCE_DIR}/tests/k0_make_unique_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k0_make_unique_app -P ${GRIDLINE_ROOT_DIR}/tests/k0_make_unique_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k0_make_unique_app PROPERTIES TIMEOUT 300)
 
     # K-20: Shift+click in the piano roll draws a note and the drag sets its length.
     add_test(NAME k20_shift_draw
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k20_shift_draw -P ${CMAKE_SOURCE_DIR}/tests/k20_shift_draw.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k20_shift_draw -P ${GRIDLINE_ROOT_DIR}/tests/k20_shift_draw.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k20_shift_draw PROPERTIES TIMEOUT 300)
 
     # K-21: a glissando on the piano roll's keyboard sounds and lights one key at a time.
     add_test(NAME k21_key_gliss
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k21_key_gliss -P ${CMAKE_SOURCE_DIR}/tests/k21_key_gliss.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k21_key_gliss -P ${GRIDLINE_ROOT_DIR}/tests/k21_key_gliss.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k21_key_gliss PROPERTIES TIMEOUT 300)
 
     # K-25: the pitch bend tool: N turns it on, a drag bends one note, the line stays drawn (dimmed) on the pencil.
     add_test(NAME k25_pitch_bend_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k25_pitch_bend_app -P ${CMAKE_SOURCE_DIR}/tests/k25_pitch_bend_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k25_pitch_bend_app -P ${GRIDLINE_ROOT_DIR}/tests/k25_pitch_bend_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k25_pitch_bend_app PROPERTIES TIMEOUT 300)
     # K-22: the hat's rack steps in the piano roll: looking changes nothing, a drag moves them into
     # the notes in one undo step, undo restores the rack row.
     add_test(NAME k22_steps_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k22_steps_app -P ${CMAKE_SOURCE_DIR}/tests/k22_steps_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k22_steps_app -P ${GRIDLINE_ROOT_DIR}/tests/k22_steps_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k22_steps_app PROPERTIES TIMEOUT 300)
     # K-28: bend points follow the piano roll's snap (1/4 step, Line, None; Alt inverts), the curve ring, Alt+right-click.
     add_test(NAME k28_bend_snap_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k28_bend_snap_app -P ${CMAKE_SOURCE_DIR}/tests/k28_bend_snap_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k28_bend_snap_app -P ${GRIDLINE_ROOT_DIR}/tests/k28_bend_snap_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k28_bend_snap_app PROPERTIES TIMEOUT 300)
     # K-39: every failure forced in the real app, judged by the report it wrote; recovery; the pop-up process.
     # (POSIX only: it expects signal names and the forked rescue copy. Windows has the units and the probe.)
     if(UNIX)
       add_test(NAME k39_crash_app
-               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                       -DOUT=${CMAKE_BINARY_DIR}/k39_crash_app -P ${CMAKE_SOURCE_DIR}/tests/k39_crash_app.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                       -DOUT=${GRIDLINE_BUILD_DIR}/k39_crash_app -P ${GRIDLINE_ROOT_DIR}/tests/k39_crash_app.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(k39_crash_app PROPERTIES TIMEOUT 400)
     endif()
     # K-47: the exports off the interface thread, the clipboard and the cache, a lost OpenGL context.
     # K-133: on every platform (it needs no signals and no fork: the graphics report, the recovery
     # copy and the pop-up go the same way on Windows).
     add_test(NAME k47_exports_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DSOUNDS=${CMAKE_SOURCE_DIR}/assets/sounds -DOUT=${CMAKE_BINARY_DIR}/k47_exports -P ${CMAKE_SOURCE_DIR}/tests/k47_exports_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DSOUNDS=${GRIDLINE_ROOT_DIR}/assets/sounds -DOUT=${GRIDLINE_BUILD_DIR}/k47_exports -P ${GRIDLINE_ROOT_DIR}/tests/k47_exports_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k47_exports_app PROPERTIES TIMEOUT 400)
     # K-133: a lost OpenGL context at the splash and in the crash pop-up; plugin interfaces opened
     # again after a reset; project bones over an earlier export; a render worker that stops moving on;
     # a Track Receipt that fails.
     add_test(NAME k133_recovery_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DCLAP=${GRIDLINE_CLAP_TESTPLUG} -DOUT=${CMAKE_BINARY_DIR}/k133_recovery_app -P ${CMAKE_SOURCE_DIR}/tests/k133_recovery_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DCLAP=${GRIDLINE_CLAP_TESTPLUG} -DOUT=${GRIDLINE_BUILD_DIR}/k133_recovery_app -P ${GRIDLINE_ROOT_DIR}/tests/k133_recovery_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k133_recovery_app PROPERTIES TIMEOUT 400)
     if(UNIX)
       # K-75: a Chromebook's Linux environment (audio defaults of a new installation, a saved choice
       # wins) and OpenGL capped at 2.1 / 3.0 under Mesa (virtual GPUs).
       add_test(NAME k75_chromeos_app
-               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/k75_chromeos_app
-                       -P ${CMAKE_SOURCE_DIR}/tests/k75_chromeos_app.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/k75_chromeos_app
+                       -P ${GRIDLINE_ROOT_DIR}/tests/k75_chromeos_app.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(k75_chromeos_app PROPERTIES TIMEOUT 300)
       # K-71: a Rescan of a slow folder over a large plugin cache never holds up a frame (POSIX: symlink loops).
       add_test(NAME k71_scan_app
-               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                       -DOUT=${CMAKE_BINARY_DIR}/k71_scan_app -P ${CMAKE_SOURCE_DIR}/tests/k71_scan_app.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                       -DOUT=${GRIDLINE_BUILD_DIR}/k71_scan_app -P ${GRIDLINE_ROOT_DIR}/tests/k71_scan_app.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(k71_scan_app PROPERTIES TIMEOUT 300)
       # K-73: the first scan of 1836 fake plugins (VST3, VST2, CLAP; hung, crashed, slow, shells) with the plugin
       # manager and the browser's full list open: every frame stays short, the scan ends by itself.
       add_test(NAME k73_scan_stress_app
                COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DSCANNER=$<TARGET_FILE:gridline_fake_plugin_scanner>
-                       -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json -DOUT=${CMAKE_BINARY_DIR}/k73_scan_stress_app
-                       -P ${CMAKE_SOURCE_DIR}/tests/k73_scan_stress_app.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                       -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json -DOUT=${GRIDLINE_BUILD_DIR}/k73_scan_stress_app
+                       -P ${GRIDLINE_ROOT_DIR}/tests/k73_scan_stress_app.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(k73_scan_stress_app PROPERTIES TIMEOUT 900)
     endif()
     # K-48: the top bar's tap tempo button: real clicks, tempo follows, one undo step a run, a pause starts over, one tapper, every width.
     add_test(NAME k48_tap_tempo_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k48_tap_tempo_app -P ${CMAKE_SOURCE_DIR}/tests/k48_tap_tempo_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k48_tap_tempo_app -P ${GRIDLINE_ROOT_DIR}/tests/k48_tap_tempo_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k48_tap_tempo_app PROPERTIES TIMEOUT 400)
     # K-29: double-click a point removes only it, a glide or its ring straightens, the note resets its line; one undo step each, chords too.
     add_test(NAME k29_bend_dblclick_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k29_bend_dblclick_app -P ${CMAKE_SOURCE_DIR}/tests/k29_bend_dblclick_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k29_bend_dblclick_app -P ${GRIDLINE_ROOT_DIR}/tests/k29_bend_dblclick_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k29_bend_dblclick_app PROPERTIES TIMEOUT 300)
     # Script window: a slow drag on an integer knob moves it; a double-click goes back to the script's value.
     add_test(NAME script_knob_drag_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/script_knob_drag_app -P ${CMAKE_SOURCE_DIR}/tests/script_knob_drag_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/script_knob_drag_app -P ${GRIDLINE_ROOT_DIR}/tests/script_knob_drag_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(script_knob_drag_app PROPERTIES TIMEOUT 300)
 
     # The typing keyboard goes by where keys sit: other layouts play the same notes.
     add_test(NAME typing_key_positions_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/typing_key_positions_app -P ${CMAKE_SOURCE_DIR}/tests/typing_key_positions_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/typing_key_positions_app -P ${GRIDLINE_ROOT_DIR}/tests/typing_key_positions_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(typing_key_positions_app PROPERTIES TIMEOUT 120)
     # K-113: the typing keyboard's layout choice: Standard by default, names per layout, kept after a quit.
     add_test(NAME typing_layout_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/typing_layout_app -P ${CMAKE_SOURCE_DIR}/tests/typing_layout_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/typing_layout_app -P ${GRIDLINE_ROOT_DIR}/tests/typing_layout_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(typing_layout_app PROPERTIES TIMEOUT 300)
 
     # A click on an off-grid clip or note changes nothing; a drag moves it by whole grid steps, keeping its offset.
     add_test(NAME drag_keeps_offset_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/drag_keeps_offset_app -P ${CMAKE_SOURCE_DIR}/tests/drag_keeps_offset_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/drag_keeps_offset_app -P ${GRIDLINE_ROOT_DIR}/tests/drag_keeps_offset_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(drag_keeps_offset_app PROPERTIES TIMEOUT 240)
 
     # K-114 / K-82: a plain edge drag extends a clip, Ctrl (Cmd) + drag loops it (read live); a clip
     # dragged past the song's start lands on the beat.
     add_test(NAME k114_clip_loop_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k114_clip_loop_app -P ${CMAKE_SOURCE_DIR}/tests/k114_clip_loop_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k114_clip_loop_app -P ${GRIDLINE_ROOT_DIR}/tests/k114_clip_loop_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k114_clip_loop_app PROPERTIES TIMEOUT 300)
 
     # K-140: Ctrl (Cmd) + edge drag of a cut clip loops the part it showed; back at the cut point it is
     # the clip it was; the loop badge shows only where a loop-key drag loops.
     add_test(NAME k140_cut_loop_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k140_cut_loop_app -P ${CMAKE_SOURCE_DIR}/tests/k140_cut_loop_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k140_cut_loop_app -P ${GRIDLINE_ROOT_DIR}/tests/k140_cut_loop_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k140_cut_loop_app PROPERTIES TIMEOUT 300)
 
     # A right-click on overlapping notes deletes only the top one, held or with a slight slip.
     add_test(NAME piano_erase_overlap
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/piano_erase_overlap -P ${CMAKE_SOURCE_DIR}/tests/piano_erase_overlap.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/piano_erase_overlap -P ${GRIDLINE_ROOT_DIR}/tests/piano_erase_overlap.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(piano_erase_overlap PROPERTIES TIMEOUT 300)
 
     # The hovered key on the piano roll's keyboard has exactly the accent chosen in Settings.
     add_test(NAME piano_key_accent_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/piano_key_accent_app -P ${CMAKE_SOURCE_DIR}/tests/piano_key_accent_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/piano_key_accent_app -P ${GRIDLINE_ROOT_DIR}/tests/piano_key_accent_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(piano_key_accent_app PROPERTIES TIMEOUT 300)
 
     # J-113: detached windows kept across runs and recovered, Space and the typing keyboard from a
     # detached window, focus moving between Gridline's windows keeping held keys, J-97 drops into a
     # detached channel rack, dialogs over it (J-116: detaching, docking back, live resize: j116_detach_app).
     add_test(NAME j113_detach_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j113_detach -P ${CMAKE_SOURCE_DIR}/tests/j113_detach.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j113_detach -P ${GRIDLINE_ROOT_DIR}/tests/j113_detach.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j113_detach_app PROPERTIES TIMEOUT 300 SKIP_REGULAR_EXPRESSION "SKIP: ")
 
     # J-116 (replaces J-114's detach on drop): only the pop-out button detaches (a panel dragged past
@@ -2079,9 +2100,9 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
     # "Bring all windows back"; live resize draws one frame per size step at the new size (SDL's
     # event watch from a blocked pump); fixed-size editors; the setting off.
     add_test(NAME j116_detach_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j116_detach -P ${CMAKE_SOURCE_DIR}/tests/j116_detach.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j116_detach -P ${GRIDLINE_ROOT_DIR}/tests/j116_detach.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j116_detach_app PROPERTIES TIMEOUT 300 SKIP_REGULAR_EXPRESSION "SKIP: ")
 
     # Plugin editors: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y / Cmd+Z undo and redo knob drags, wheel turns and
@@ -2089,52 +2110,52 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
     # K-7: Junction's map in the real app: wiring, moving, deleting, zooming, undo per edit, both
     # themes, interface scales 100 % and 200 %.
     add_test(NAME k7_junction_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k7_junction_app -P ${CMAKE_SOURCE_DIR}/tests/k7_junction_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k7_junction_app -P ${GRIDLINE_ROOT_DIR}/tests/k7_junction_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k7_junction_app PROPERTIES TIMEOUT 300)
 
     # K-7: an installed plugin inside a Junction: its own interface opens, an edit there comes
     # back as an edit of the song, undo restores it in the plugin (the in-tree test plugin).
     add_test(NAME k7_junction_hosted_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DCLAP=${GRIDLINE_CLAP_TESTPLUG} -DOUT=${CMAKE_BINARY_DIR}/k7_junction_hosted_app -P ${CMAKE_SOURCE_DIR}/tests/k7_junction_hosted_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DCLAP=${GRIDLINE_CLAP_TESTPLUG} -DOUT=${GRIDLINE_BUILD_DIR}/k7_junction_hosted_app -P ${GRIDLINE_ROOT_DIR}/tests/k7_junction_hosted_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k7_junction_hosted_app PROPERTIES TIMEOUT 120 SKIP_REGULAR_EXPRESSION "SKIP: ")
 
     # An export of a project with an installed plugin leaves the window alive, and Cancel and quit work.
     add_test(NAME k38_export_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DCLAP=${GRIDLINE_CLAP_TESTPLUG} -DOUT=${CMAKE_BINARY_DIR}/k38_export_app -P ${CMAKE_SOURCE_DIR}/tests/k38_export_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DCLAP=${GRIDLINE_CLAP_TESTPLUG} -DOUT=${GRIDLINE_BUILD_DIR}/k38_export_app -P ${GRIDLINE_ROOT_DIR}/tests/k38_export_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k38_export_app PROPERTIES TIMEOUT 420)
 
     # A seeded stress run (src/app/DevStress.h): rapid edits, undo, add and remove, play, render while editing.
     add_test(NAME k38_stress_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k38_stress_app -P ${CMAKE_SOURCE_DIR}/tests/k38_stress_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k38_stress_app -P ${GRIDLINE_ROOT_DIR}/tests/k38_stress_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k38_stress_app PROPERTIES TIMEOUT 300)
 
     # K-37: a bridged plugin's interface that never closes does not stop the app.
     add_test(NAME k37_bridged_close_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DCLAP=${GRIDLINE_CLAP_TESTPLUG} -DOUT=${CMAKE_BINARY_DIR}/k37_bridged_close_app -P ${CMAKE_SOURCE_DIR}/tests/k37_bridged_close_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DCLAP=${GRIDLINE_CLAP_TESTPLUG} -DOUT=${GRIDLINE_BUILD_DIR}/k37_bridged_close_app -P ${GRIDLINE_ROOT_DIR}/tests/k37_bridged_close_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k37_bridged_close_app PROPERTIES TIMEOUT 200 SKIP_REGULAR_EXPRESSION "SKIP: ")
 
     add_test(NAME plugin_undo_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/plugin_undo_app -P ${CMAKE_SOURCE_DIR}/tests/plugin_undo_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/plugin_undo_app -P ${GRIDLINE_ROOT_DIR}/tests/plugin_undo_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(plugin_undo_app PROPERTIES TIMEOUT 300 SKIP_REGULAR_EXPRESSION "SKIP: ")
 
     # K-40: Crest's editor as drawn: no overlaps, knobs and controls on their rows and columns, no
     # clipped text, in every view, band, mode and engine, at interface scales 100 and 200 %, in both themes.
     add_test(NAME k40_crest_layout_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app>
-                     -DOUT=${CMAKE_BINARY_DIR}/k40_crest_layout_app -P ${CMAKE_SOURCE_DIR}/tests/k40_crest_layout_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k40_crest_layout_app -P ${GRIDLINE_ROOT_DIR}/tests/k40_crest_layout_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k40_crest_layout_app PROPERTIES TIMEOUT 1200)
 
     # J-117: floating windows inside the main window have an elastic boundary (dragged past an
@@ -2142,176 +2163,176 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
     # window pulls them back), the pop-out button stays beside the close button whatever the
     # window's position, and docking by dragging still works.
     add_test(NAME j117_rubber_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j117_rubber -P ${CMAKE_SOURCE_DIR}/tests/j117_rubber.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j117_rubber -P ${GRIDLINE_ROOT_DIR}/tests/j117_rubber.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j117_rubber_app PROPERTIES TIMEOUT 300)
 
     # J-158: big plugin editors (Platter, Seltmann) fit inside the main window: never popped out
     # by themselves (also when saved on a larger main window), the main window keeps its size,
     # capped to the work area with their content scrolling, natural size on big screens.
     add_test(NAME j158_window_fit_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j158_window_fit -P ${CMAKE_SOURCE_DIR}/tests/j158_window_fit_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j158_window_fit -P ${GRIDLINE_ROOT_DIR}/tests/j158_window_fit_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j158_window_fit_app PROPERTIES TIMEOUT 300)
 
     # K-72 (issue 15): the main window's menus, popups and hints stay inside it (a docked rack's
     # "+" menu at the right edge used to open in OS windows made and destroyed per submenu, and
     # the app flickered); a popped-out window's menus may still stick out of it.
     add_test(NAME k72_popups_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k72_popups -P ${CMAKE_SOURCE_DIR}/tests/k72_popups_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k72_popups -P ${GRIDLINE_ROOT_DIR}/tests/k72_popups_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k72_popups_app PROPERTIES TIMEOUT 300 SKIP_REGULAR_EXPRESSION "SKIP: ")
     # K-77: the main menus and the context menus in their planned order (open, create, edit,
     # properties, arrange, removals last), with no empty sections and no item listed twice.
     add_test(NAME k77_menu_order_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k77_menu_order -P ${CMAKE_SOURCE_DIR}/tests/k77_menu_order_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k77_menu_order -P ${GRIDLINE_ROOT_DIR}/tests/k77_menu_order_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k77_menu_order_app PROPERTIES TIMEOUT 600)
     # K-79: the window layout never reaches the project: the same project saved under every
     # layout (chosen in settings or switched while running) is byte-identical, and opening it changes nothing.
     add_test(NAME k79_layout_project_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k79_layout_project -P ${CMAKE_SOURCE_DIR}/tests/k79_layout_project_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k79_layout_project -P ${GRIDLINE_ROOT_DIR}/tests/k79_layout_project_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k79_layout_project_app PROPERTIES TIMEOUT 600)
     # K-130: the layout chooser: the welcome page (keyboard and mouse), Settings > Interface (a
     # card and the Matching shortcuts option) and View > Window layout each pick and save a layout.
     add_test(NAME k130_layout_chooser_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k130_layout_chooser -P ${CMAKE_SOURCE_DIR}/tests/k130_layout_chooser_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k130_layout_chooser -P ${GRIDLINE_ROOT_DIR}/tests/k130_layout_chooser_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k130_layout_chooser_app PROPERTIES TIMEOUT 600)
 
     # K-83: on X11 a popped-out window's menus, lists and hints stay inside it where they fit (an
     # OS window made per submenu or hint made the screen flicker on GNOME); macOS / Windows keep
     # letting them stick out.
     add_test(NAME k83_popups_detached_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k83_popups -P ${CMAKE_SOURCE_DIR}/tests/k83_popups_detached_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k83_popups -P ${GRIDLINE_ROOT_DIR}/tests/k83_popups_detached_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k83_popups_detached_app PROPERTIES TIMEOUT 300 SKIP_REGULAR_EXPRESSION "SKIP: ")
 
     # K-19: plugin editors have their own size on top of the interface scale: automatic on a
     # large workspace, a picked size drawn, remembered and capped to the work area, controls
     # working where they show.
     add_test(NAME k19_editor_zoom_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k19_editor_zoom -P ${CMAKE_SOURCE_DIR}/tests/k19_editor_zoom_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k19_editor_zoom -P ${GRIDLINE_ROOT_DIR}/tests/k19_editor_zoom_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k19_editor_zoom_app PROPERTIES TIMEOUT 300)
     # K-147: every built-in plugin window fits its editor (nothing clipped, no spare room) at the
     # default size, 75, 100 and 150 %, at interface scale 1 and 2.
     add_test(NAME k147_plugin_fit_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k147_plugin_fit -P ${CMAKE_SOURCE_DIR}/tests/k147_plugin_fit_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k147_plugin_fit -P ${GRIDLINE_ROOT_DIR}/tests/k147_plugin_fit_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k147_plugin_fit_app PROPERTIES TIMEOUT 1800)
     # K-147: Tracer's synced Time knob holds on divisions, is free between them, one undo per
     # drag; Shift drags past them; the wheel steps from division to division.
     add_test(NAME k147_magnet_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k147_magnet -P ${CMAKE_SOURCE_DIR}/tests/k147_magnet_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k147_magnet -P ${GRIDLINE_ROOT_DIR}/tests/k147_magnet_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k147_magnet_app PROPERTIES TIMEOUT 400)
     # K-136: one size for every built-in plugin window (K-147: 75 % by default, 60 to 150 %), a plugin's
     # own size remembered, controls working at 75 %; the channel rack as tall as its content.
     add_test(NAME k136_plugin_size_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k136_plugin_size -P ${CMAKE_SOURCE_DIR}/tests/k136_plugin_size_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k136_plugin_size -P ${GRIDLINE_ROOT_DIR}/tests/k136_plugin_size_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k136_plugin_size_app PROPERTIES TIMEOUT 400)
     add_test(NAME k136_rack_fit_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k136_rack_fit -P ${CMAKE_SOURCE_DIR}/tests/k136_rack_fit_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k136_rack_fit -P ${GRIDLINE_ROOT_DIR}/tests/k136_rack_fit_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k136_rack_fit_app PROPERTIES TIMEOUT 300)
     # K-146: a cut-off rack with a long pattern: one sideways scroll control (the step slider), no
     # frame-to-frame size or scroll changes, the wheel and the slider scroll by the expected amounts.
     add_test(NAME k146_rack_scroll_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k146_rack_scroll -P ${CMAKE_SOURCE_DIR}/tests/k146_rack_scroll_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k146_rack_scroll -P ${GRIDLINE_ROOT_DIR}/tests/k146_rack_scroll_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k146_rack_scroll_app PROPERTIES TIMEOUT 400)
     # K-15: Loupe pinned into the main layout (a tab next to the playlist, a split below it, a
     # side column), its geometry in each spot, unpinned again, the pin kept with the layout.
     add_test(NAME k15_loupe_dock_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k15_loupe_dock -P ${CMAKE_SOURCE_DIR}/tests/k15_loupe_dock_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k15_loupe_dock -P ${GRIDLINE_ROOT_DIR}/tests/k15_loupe_dock_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k15_loupe_dock_app PROPERTIES TIMEOUT 300)
 
     # J-118: the clip brush: click a trimmed audio clip, paint copies of it as it is (length,
     # audio start, fades, gain, pitch, reverse); a sample picked in the picker paints at its
     # natural length; one undo step per paint. Crossfade screenshots at 1x / 2x, light / dark.
     add_test(NAME j118_paint_brush_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j118_paint_brush -P ${CMAKE_SOURCE_DIR}/tests/j118_paint_brush.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j118_paint_brush -P ${GRIDLINE_ROOT_DIR}/tests/j118_paint_brush.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j118_paint_brush_app PROPERTIES TIMEOUT 300)
 
     # K-37: the Sweep Kick channel's envelope page at 100 % and 200 %, dark and light.
     add_test(NAME k37_sweepkick_env_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/k37_sweepkick_env
-                     -P ${CMAKE_SOURCE_DIR}/tests/k37_sweepkick_env.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/k37_sweepkick_env
+                     -P ${GRIDLINE_ROOT_DIR}/tests/k37_sweepkick_env.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k37_sweepkick_env_app PROPERTIES TIMEOUT 300)
 
     # J-142: relative volume / fade drags across a selection of audio clips (one undo step each),
     # a single clip edited alone, and right-clicks on a clip's title strip: the name box and the
     # menu arrow open the clip menu, the rest of the strip deletes like the body (right-drag too).
     add_test(NAME j142_clip_edits_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j142_clip_edits -P ${CMAKE_SOURCE_DIR}/tests/j142_clip_edits.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j142_clip_edits -P ${GRIDLINE_ROOT_DIR}/tests/j142_clip_edits.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j142_clip_edits_app PROPERTIES TIMEOUT 300)
 
     # J-187: the slip tool on a selection slips every selected clip (one undo step); alone, only the clip.
     add_test(NAME j187_multi_slip_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j187_multi_slip -P ${CMAKE_SOURCE_DIR}/tests/j187_multi_slip.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j187_multi_slip -P ${GRIDLINE_ROOT_DIR}/tests/j187_multi_slip.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j187_multi_slip_app PROPERTIES TIMEOUT 300)
 
     # J-194: the browser search field's clear button empties the field, also while it is being edited.
     add_test(NAME j194_browser_search_clear_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j194_browser_search_clear
-                     -P ${CMAKE_SOURCE_DIR}/tests/j194_browser_search_clear.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j194_browser_search_clear
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j194_browser_search_clear.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j194_browser_search_clear_app PROPERTIES TIMEOUT 300)
 
     # J-198: the tempo display's whole-number and decimal drag zones.
     add_test(NAME j198_tempo_drag_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j198_tempo_drag
-                     -P ${CMAKE_SOURCE_DIR}/tests/j198_tempo_drag.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j198_tempo_drag
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j198_tempo_drag.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j198_tempo_drag_app PROPERTIES TIMEOUT 300)
 
     # J-195: the channel window's "Route to a free mixer track" button and list item (audio clip
     # channel, instrument, installed plugin channel): free insert, track named, one undo step.
     add_test(NAME j195_route_free_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j195_route_free -P ${CMAKE_SOURCE_DIR}/tests/j195_route_free.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j195_route_free -P ${GRIDLINE_ROOT_DIR}/tests/j195_route_free.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j195_route_free_app PROPERTIES TIMEOUT 300)
 
     # J-193: a stretch-resized clip keeps its bars on a tempo change; an unstretched one keeps its audio.
     add_test(NAME j193_tempo_follow_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j193_tempo_follow -P ${CMAKE_SOURCE_DIR}/tests/j193_tempo_follow.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j193_tempo_follow -P ${GRIDLINE_ROOT_DIR}/tests/j193_tempo_follow.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j193_tempo_follow_app PROPERTIES TIMEOUT 300)
 
     # J-188: smooth snapping glides a dragged clip over several frames (off: jumps; the switch applies
     # live, also mid-drag); a Ctrl+wheel notch zooms smoothly with the point under the pointer fixed.
     add_test(NAME j188_smooth_motion_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j188_smooth_motion -P ${CMAKE_SOURCE_DIR}/tests/j188_smooth_motion.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j188_smooth_motion -P ${GRIDLINE_ROOT_DIR}/tests/j188_smooth_motion.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j188_smooth_motion_app PROPERTIES TIMEOUT 300)
 
     # J-192: File > Import > Import from URL with a fake yt-dlp / ffmpeg (no network): open, paste,
@@ -2319,187 +2340,187 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
     # tools set up on first use (a fake GitHub); screenshots of each state.
     add_test(NAME j192_import_url_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTOOL=$<TARGET_FILE:gridline_fake_media_tool>
-                     -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j192_import_url -P ${CMAKE_SOURCE_DIR}/tests/j192_import_url.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j192_import_url -P ${GRIDLINE_ROOT_DIR}/tests/j192_import_url.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j192_import_url_app PROPERTIES TIMEOUT 300)
 
     # The plugin window's channel strip (volume, pan, pitch, preview keyboard): hidden by default,
     # the header's eye slides it in and out, the window's size is stable after the slide, the
     # keyboard and knobs work while shown, and the choice survives a restart.
     add_test(NAME plugin_strip_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/plugin_strip -P ${CMAKE_SOURCE_DIR}/tests/plugin_strip.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/plugin_strip -P ${GRIDLINE_ROOT_DIR}/tests/plugin_strip.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(plugin_strip_app PROPERTIES TIMEOUT 300)
 
     # J-107: Seltmann's one-step flow: drop a file on the editor -> analysed -> click a layout -> playing.
     add_test(NAME seltmann_flow
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/seltmann_flow -P ${CMAKE_SOURCE_DIR}/tests/seltmann_flow.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/seltmann_flow -P ${GRIDLINE_ROOT_DIR}/tests/seltmann_flow.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(seltmann_flow PROPERTIES TIMEOUT 300)
 
     # J-185: Seltmann: drag a pad's pitch readout, right-click a block > Start the sequence here (undo), drag a cut to resize.
     add_test(NAME j185_seltmann_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/j185_seltmann -P ${CMAKE_SOURCE_DIR}/tests/j185_seltmann_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j185_seltmann -P ${GRIDLINE_ROOT_DIR}/tests/j185_seltmann_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j185_seltmann_app PROPERTIES TIMEOUT 300)
 
     # J-208: Seltmann: the wheel over a sequence block pitches its region (Shift: finer), one undo step a run.
     add_test(NAME j208_seltmann_wheel
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/j208_seltmann_wheel -P ${CMAKE_SOURCE_DIR}/tests/j208_seltmann_wheel.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j208_seltmann_wheel -P ${GRIDLINE_ROOT_DIR}/tests/j208_seltmann_wheel.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j208_seltmann_wheel PROPERTIES TIMEOUT 300)
 
     # J-214: Seltmann: a sequence block's right edge sets that step's length (not its region), one undo step a drag.
     add_test(NAME j214_seltmann_lengths
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/j214_seltmann_lengths -P ${CMAKE_SOURCE_DIR}/tests/j214_seltmann_lengths.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j214_seltmann_lengths -P ${GRIDLINE_ROOT_DIR}/tests/j214_seltmann_lengths.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j214_seltmann_lengths PROPERTIES TIMEOUT 300)
 
     # J-218: Seltmann records from an input on its start screen (a synthetic input signal, never a microphone).
     add_test(NAME j218_seltmann_record
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
                      -DRECBIN=$<TARGET_FILE:gridline_test_seltmann_rec>
-                     -DOUT=${CMAKE_BINARY_DIR}/j218_seltmann_record -P ${CMAKE_SOURCE_DIR}/tests/j218_seltmann_record.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j218_seltmann_record -P ${GRIDLINE_ROOT_DIR}/tests/j218_seltmann_record.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j218_seltmann_record PROPERTIES TIMEOUT 400)
 
     # K-145: a recording's waveform drawn live and fitted to the width, in Loupe and Seltmann's recorder (simulated inputs).
     add_test(NAME k145_live_wave
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/k145_live_wave -P ${CMAKE_SOURCE_DIR}/tests/k145_live_wave.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k145_live_wave -P ${GRIDLINE_ROOT_DIR}/tests/k145_live_wave.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k145_live_wave PROPERTIES TIMEOUT 600)
 
     # J-208: the playlist picker's "+" (new pattern) and plugins dropped on playlist tracks (instrument tracks).
     add_test(NAME j208_playlist_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j208_playlist -P ${CMAKE_SOURCE_DIR}/tests/j208_playlist_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j208_playlist -P ${GRIDLINE_ROOT_DIR}/tests/j208_playlist_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j208_playlist_app PROPERTIES TIMEOUT 400)
 
     # K-17: audio dragged out of Loupe onto playlist tracks (whole file / selection), edited audio in the PROJECT tab.
     add_test(NAME k17_loupe_drag
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k17_loupe_drag -P ${CMAKE_SOURCE_DIR}/tests/k17_loupe_drag.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k17_loupe_drag -P ${GRIDLINE_ROOT_DIR}/tests/k17_loupe_drag.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k17_loupe_drag PROPERTIES TIMEOUT 400)
 
     # K-18: rename, new folder, moves and the trash in the browser; the project's references and undo follow.
     add_test(NAME k18_browser_files
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/k18_browser_files -P ${CMAKE_SOURCE_DIR}/tests/k18_browser_files.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/k18_browser_files -P ${GRIDLINE_ROOT_DIR}/tests/k18_browser_files.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(k18_browser_files PROPERTIES TIMEOUT 400)
 
     # J-191: Split stems from the clip menu (a tiny model): four aligned clips on new tracks, one undo step.
     add_test(NAME j191_stems_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_tests_stems>
-                     -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j191_stems_app -P ${CMAKE_SOURCE_DIR}/tests/j191_stems_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j191_stems_app -P ${GRIDLINE_ROOT_DIR}/tests/j191_stems_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j191_stems_app PROPERTIES TIMEOUT 400)
 
     # J-151: Platter's two decks: the controller question, both decks playing, the crossfader.
     add_test(NAME platter_flow
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_platter>
-                     -DOUT=${CMAKE_BINARY_DIR}/platter_flow -P ${CMAKE_SOURCE_DIR}/tests/platter_flow.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/platter_flow -P ${GRIDLINE_ROOT_DIR}/tests/platter_flow.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(platter_flow PROPERTIES TIMEOUT 300)
 
     # J-160: audio dragged onto Platter loads on the deck it is dropped on (A or B, lane or panel).
     add_test(NAME platter_drop
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_platter>
-                     -DOUT=${CMAKE_BINARY_DIR}/platter_drop -P ${CMAKE_SOURCE_DIR}/tests/platter_drop.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/platter_drop -P ${GRIDLINE_ROOT_DIR}/tests/platter_drop.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(platter_drop PROPERTIES TIMEOUT 300)
 
     # J-159: deck passes recorded as automation and notes (pattern and song mode, a new pattern
     # per pass, one undo step each), shown in the piano roll and the playlist.
     add_test(NAME platter_perf_flow
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_platter>
-                     -DOUT=${CMAKE_BINARY_DIR}/platter_perf_flow -P ${CMAKE_SOURCE_DIR}/tests/platter_perf_flow.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/platter_perf_flow -P ${GRIDLINE_ROOT_DIR}/tests/platter_perf_flow.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(platter_perf_flow PROPERTIES TIMEOUT 300)
 
     # J-204: Platter's hot cue pads tapped as fast as the input allows (playing and stopped,
     # alternating pads, Shift, right-click, hot cue keys): every tap lands, nothing sticks.
     add_test(NAME j204_hotcue_taps
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_platter>
-                     -DOUT=${CMAKE_BINARY_DIR}/j204_hotcue_taps -P ${CMAKE_SOURCE_DIR}/tests/j204_hotcue_taps.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j204_hotcue_taps -P ${GRIDLINE_ROOT_DIR}/tests/j204_hotcue_taps.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j204_hotcue_taps PROPERTIES TIMEOUT 400)
 
     # J-110: Seltmann's pattern Play button follows every Stop (button, Space, panic, Tools menu,
     # MIDI / remote, focus loss) and plays again with one click.
     add_test(NAME j110_play_state_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/j110_play_state -P ${CMAKE_SOURCE_DIR}/tests/j110_play_state.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j110_play_state -P ${GRIDLINE_ROOT_DIR}/tests/j110_play_state.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j110_play_state_app PROPERTIES TIMEOUT 300)
 
     # J-217: audio recorded into the playlist (synthetic input) draws its clip and waveform live; the
     # committed clip equals the last live frame (geometry, peaks), loop passes stack, at 100 % and 200 %.
     add_test(NAME j217_live_take_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j217_live_take
-                     -P ${CMAKE_SOURCE_DIR}/tests/j217_live_take_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j217_live_take
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j217_live_take_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j217_live_take_app PROPERTIES TIMEOUT 300)
 
     # J-181: Kerf's editor: drop zone, loading, tabs and display modes respond, fits at 1280 x 800, layout audit clean.
     add_test(NAME j181_kerf_ui_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/j181_kerf_ui -P ${CMAKE_SOURCE_DIR}/tests/j181_kerf_ui.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j181_kerf_ui -P ${GRIDLINE_ROOT_DIR}/tests/j181_kerf_ui.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j181_kerf_ui_app PROPERTIES TIMEOUT 600)
 
     # J-182: Kerf's snap, ruler, marker drag / add on the grid, rename and typed position in the real app.
     add_test(NAME j182_kerf_time_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/j182_kerf_time -P ${CMAKE_SOURCE_DIR}/tests/j182_kerf_time.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j182_kerf_time -P ${GRIDLINE_ROOT_DIR}/tests/j182_kerf_time.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j182_kerf_time_app PROPERTIES TIMEOUT 600)
 
     # J-190: Kerf slices on the beat grid: the grid menu, region counts and starts on the detected grid, layout audit.
     add_test(NAME j190_kerf_grid_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/j190_kerf_grid -P ${CMAKE_SOURCE_DIR}/tests/j190_kerf_grid.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j190_kerf_grid -P ${GRIDLINE_ROOT_DIR}/tests/j190_kerf_grid.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j190_kerf_grid_app PROPERTIES TIMEOUT 600)
 
     # J-184: Pixel Tone pictures: file dialog + undo, drop on the picture (highlight), rack rows, corrupt file.
     add_test(NAME j184_pixeltone_pictures_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_pixeltone>
-                     -DOUT=${CMAKE_BINARY_DIR}/j184_pixeltone_pictures -P ${CMAKE_SOURCE_DIR}/tests/j184_pixeltone_pictures.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j184_pixeltone_pictures -P ${GRIDLINE_ROOT_DIR}/tests/j184_pixeltone_pictures.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j184_pixeltone_pictures_app PROPERTIES TIMEOUT 600)
 
     # J-183: Kerf's layout: no overlapping controls, rows aligned, no clipped or tiny text (1440x960, 1280x800, UI scale 1.5).
     add_test(NAME j183_kerf_layout_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/j183_kerf_layout -P ${CMAKE_SOURCE_DIR}/tests/j183_kerf_layout.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j183_kerf_layout -P ${GRIDLINE_ROOT_DIR}/tests/j183_kerf_layout.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j183_kerf_layout_app PROPERTIES TIMEOUT 900)
 
     # J-186: play lights in the real app: channel rack rows light while their channel plays (steps on two
     # channels, a silent and a muted row stay dark); Kerf lights the region a note plays.
     add_test(NAME j186_play_lights_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/j186_play_lights -P ${CMAKE_SOURCE_DIR}/tests/j186_play_lights.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j186_play_lights -P ${GRIDLINE_ROOT_DIR}/tests/j186_play_lights.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j186_play_lights_app PROPERTIES TIMEOUT 600)
 
     # J-112: Space / the Play button / the remote Play while Seltmann's pattern plays (transport stopped) stop the
     # pattern and leave the transport stopped; the next Play plays the song. Window focused or not.
     add_test(NAME j112_play_stops_plugins_app
              COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DTESTBIN=$<TARGET_FILE:gridline_test_seltmann>
-                     -DOUT=${CMAKE_BINARY_DIR}/j112_play_stops_plugins -P ${CMAKE_SOURCE_DIR}/tests/j112_play_stops_plugins.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j112_play_stops_plugins -P ${GRIDLINE_ROOT_DIR}/tests/j112_play_stops_plugins.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j112_play_stops_plugins_app PROPERTIES TIMEOUT 300)
 
     # J-111: two app windows (hidden, own configs, the app's network settings) collaborate through
@@ -2507,88 +2528,88 @@ if((SDL2_FOUND OR SDL2PC_FOUND) AND OPENGL_FOUND)
     # (project file / folder) and reconnect by themselves; a join whose ICE connects late still works.
     if(GRIDLINE_COLLAB)
       add_test(NAME j111_collab_app
-               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j111_collab_app
-                       -P ${CMAKE_SOURCE_DIR}/tests/j111_collab_app.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j111_collab_app
+                       -P ${GRIDLINE_ROOT_DIR}/tests/j111_collab_app.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(j111_collab_app PROPERTIES TIMEOUT 900)
       # K-141: undo / redo through the real shortcuts in two app windows, in each window layout:
       # each person's undo takes back only their own step, redo puts it back.
       add_test(NAME k141_collab_undo_app
-               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/k141_collab_undo_app
-                       -P ${CMAKE_SOURCE_DIR}/tests/k141_collab_undo_app.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/k141_collab_undo_app
+                       -P ${GRIDLINE_ROOT_DIR}/tests/k141_collab_undo_app.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(k141_collab_undo_app PROPERTIES TIMEOUT 1500)
       # J-111e: an admin removes someone whose project is open; private copy; leave > keep / delete.
       add_test(NAME j111e_collab_remove_app
-               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j111e_collab_remove_app
-                       -P ${CMAKE_SOURCE_DIR}/tests/j111e_collab_remove_app.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j111e_collab_remove_app
+                       -P ${GRIDLINE_ROOT_DIR}/tests/j111e_collab_remove_app.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(j111e_collab_remove_app PROPERTIES TIMEOUT 1800)
       # J-111d: collaborators' cursors: a simulated collaborator's cursor drawn on top of a floating
       # window (pixel read back) and faded where its spot is not shown; two app windows of other
       # sizes and interface scales map a cursor to the same playlist spot and the same button.
       add_test(NAME j111d_collab_cursors
-               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j111d_collab_cursors
-                       -P ${CMAKE_SOURCE_DIR}/tests/j111d_collab_cursors.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j111d_collab_cursors
+                       -P ${GRIDLINE_ROOT_DIR}/tests/j111d_collab_cursors.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(j111d_collab_cursors PROPERTIES TIMEOUT 600)
       # J-111f: a live rename reaches the other window (name, title, file, Recent collaborative
       # projects); a rename made while the other Gridline was closed arrives when both are open again.
       add_test(NAME j111_rename_app
-               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j111_rename_app
-                       -P ${CMAKE_SOURCE_DIR}/tests/j111_rename_app.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j111_rename_app
+                       -P ${GRIDLINE_ROOT_DIR}/tests/j111_rename_app.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(j111_rename_app PROPERTIES TIMEOUT 900)
       # J-111h: no window changes size after it opened (Share this project, renaming in place,
       # Project info, a window sizing itself to a full-width section), at a large and a small size.
       add_test(NAME j111h_dialog_stable
-               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j111h_dialog_stable
-                       -P ${CMAKE_SOURCE_DIR}/tests/j111h_dialog_stable.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j111h_dialog_stable
+                       -P ${GRIDLINE_ROOT_DIR}/tests/j111h_dialog_stable.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(j111h_dialog_stable PROPERTIES TIMEOUT 600)
     endif()
 
     # J-103: a session (demo copy, playing, an editor open) quit by the user, and the layout audit
     # without --screenshot, exit with code 0: no background thread runs into static destruction.
     add_test(NAME j103_clean_exit
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j103_clean_exit -P ${CMAKE_SOURCE_DIR}/tests/j103_clean_exit.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j103_clean_exit -P ${GRIDLINE_ROOT_DIR}/tests/j103_clean_exit.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j103_clean_exit PROPERTIES TIMEOUT 900)
     # J-141: the welcome launcher: logo shows it, Esc returns, tiles open projects, unsaved changes ask first.
     add_test(NAME j141_launcher_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                     -DOUT=${CMAKE_BINARY_DIR}/j141_launcher_app -P ${CMAKE_SOURCE_DIR}/tests/j141_launcher_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                     -DOUT=${GRIDLINE_BUILD_DIR}/j141_launcher_app -P ${GRIDLINE_ROOT_DIR}/tests/j141_launcher_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j141_launcher_app PROPERTIES TIMEOUT 600)
     # K-119: files the system asks to open (macOS open requests while starting and while running, the
     # argument opened once), projects and tracker modules, unsaved changes asked first.
     if(Python3_Interpreter_FOUND)
       add_test(NAME k119_os_open
-               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json
-                       -DPY=${Python3_EXECUTABLE} -DOUT=${CMAKE_BINARY_DIR}/k119_os_open -P ${CMAKE_SOURCE_DIR}/tests/k119_os_open.cmake
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DDEMO=${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json
+                       -DPY=${Python3_EXECUTABLE} -DOUT=${GRIDLINE_BUILD_DIR}/k119_os_open -P ${GRIDLINE_ROOT_DIR}/tests/k119_os_open.cmake
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(k119_os_open PROPERTIES TIMEOUT 600)
       # K-121: a later launch hands its files to the running Gridline (two hidden instances on a
       # private test endpoint): opened with the unsaved-changes prompt, opt-out, stale socket, hidden runs.
       add_test(NAME k121_single_instance
-               COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/k121_single_instance.py $<TARGET_FILE:gridline-app>
-                       ${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json ${CMAKE_BINARY_DIR}/k121_single_instance
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${Python3_EXECUTABLE} ${GRIDLINE_ROOT_DIR}/tests/k121_single_instance.py $<TARGET_FILE:gridline-app>
+                       ${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json ${GRIDLINE_BUILD_DIR}/k121_single_instance
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(k121_single_instance PROPERTIES TIMEOUT 600)
       # K-93: the command palette in each layout and translated: every menu item once, every keymap
       # command once, the shortcut, typing + Enter runs commands, settings, plugins; recent rows.
       add_test(NAME k93_palette_app
-               COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/k93_palette_app.py $<TARGET_FILE:gridline-app>
-                       ${CMAKE_SOURCE_DIR}/tests/fixtures/test_song.gridline.json ${CMAKE_BINARY_DIR}/k93_palette_app
-               WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+               COMMAND ${Python3_EXECUTABLE} ${GRIDLINE_ROOT_DIR}/tests/k93_palette_app.py $<TARGET_FILE:gridline-app>
+                       ${GRIDLINE_ROOT_DIR}/tests/fixtures/test_song.gridline.json ${GRIDLINE_BUILD_DIR}/k93_palette_app
+               WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
       set_tests_properties(k93_palette_app PROPERTIES TIMEOUT 900)
     endif()
     # J-146: the welcome screen's Collaborative view: rail, tiles, Join, live presence (simulated collaborators).
     add_test(NAME j146_launcher_collab_app
-             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${CMAKE_BINARY_DIR}/j146_launcher_collab_app
-                     -P ${CMAKE_SOURCE_DIR}/tests/j146_launcher_collab_app.cmake
-             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+             COMMAND ${CMAKE_COMMAND} -DAPP=$<TARGET_FILE:gridline-app> -DOUT=${GRIDLINE_BUILD_DIR}/j146_launcher_collab_app
+                     -P ${GRIDLINE_ROOT_DIR}/tests/j146_launcher_collab_app.cmake
+             WORKING_DIRECTORY ${GRIDLINE_BUILD_DIR})
     set_tests_properties(j146_launcher_collab_app PROPERTIES TIMEOUT 600)
   endif()
 
@@ -2639,13 +2660,13 @@ if(WIN32)
     set(GL_RC_FILENAME "${filename}")
     set(GL_RC_FILETYPE "${filetype}")
     if(icon)
-      file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/assets/icons/Gridline.ico" _ico)
+      file(TO_CMAKE_PATH "${GRIDLINE_ROOT_DIR}/assets/icons/Gridline.ico" _ico)
       set(GL_RC_ICON "1 ICON \"${_ico}\"")
     else()
       set(GL_RC_ICON "")
     endif()
-    configure_file(${CMAKE_SOURCE_DIR}/cmake/windows/gridline.rc.in ${CMAKE_BINARY_DIR}/generated/${target}.rc @ONLY)
-    target_sources(${target} PRIVATE ${CMAKE_BINARY_DIR}/generated/${target}.rc)
+    configure_file(${GRIDLINE_ROOT_DIR}/cmake/windows/gridline.rc.in ${GRIDLINE_BUILD_DIR}/generated/${target}.rc @ONLY)
+    target_sources(${target} PRIVATE ${GRIDLINE_BUILD_DIR}/generated/${target}.rc)
   endfunction()
   gridline_windows_resources(gridline "Gridline command line" "gridline.exe" "VFT_APP" ON)
   if(TARGET gridline-app)
@@ -2667,11 +2688,11 @@ if(WIN32)
   foreach(_t ${_gl_targets})
     get_target_property(_type ${_t} TYPE)
     if(_type STREQUAL "EXECUTABLE")
-      target_sources(${_t} PRIVATE ${CMAKE_SOURCE_DIR}/cmake/windows/gridline.manifest)
+      target_sources(${_t} PRIVATE ${GRIDLINE_ROOT_DIR}/cmake/windows/gridline.manifest)
     elseif(_type STREQUAL "MODULE_LIBRARY")
       # Plugins share output names (Gridline, GridlineTest): their import libraries and export
       # files (.lib / .exp) go to a folder of their own.
-      set_target_properties(${_t} PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/implib/${_t})
+      set_target_properties(${_t} PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${GRIDLINE_BUILD_DIR}/implib/${_t})
     endif()
   endforeach()
 endif()
@@ -2679,7 +2700,7 @@ endif()
 # ---- Linux packages (cpack in the build folder): .tar.gz, .deb, .rpm ----
 # Installed under /usr: programs in bin, assets in share/gridline, the desktop entry, icons and
 # MIME type; with GRIDLINE_INSTALL_PLUGINS=ON also lib/vst3/Gridline.vst3 and lib/clap/Gridline.clap.
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE AND NOT GRIDLINE_ANDROID)
   set(CPACK_PACKAGE_NAME gridline)
   set(CPACK_PACKAGE_VENDOR "Gridline")
   # Package versions: numbers for CPack, 0.7.0~beta.1 for Debian (sorts before 0.7.0), Version
@@ -2715,8 +2736,8 @@ if(UNIX AND NOT APPLE)
       /usr/share/mime/packages /usr/share/metainfo /usr/lib/vst3 /usr/lib/clap)
   # K-119: the file type and desktop entry caches. The .deb needs no script: dpkg's triggers of
   # shared-mime-info and desktop-file-utils refresh them. The .rpm runs one where no trigger does.
-  set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE ${CMAKE_SOURCE_DIR}/cmake/linux/rpm-refresh-caches.sh)
-  set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE ${CMAKE_SOURCE_DIR}/cmake/linux/rpm-refresh-caches.sh)
+  set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE ${GRIDLINE_ROOT_DIR}/cmake/linux/rpm-refresh-caches.sh)
+  set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE ${GRIDLINE_ROOT_DIR}/cmake/linux/rpm-refresh-caches.sh)
   if(NOT CPACK_GENERATOR)
     set(CPACK_GENERATOR "TGZ;DEB;RPM")
   endif()

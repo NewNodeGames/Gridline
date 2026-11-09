@@ -294,6 +294,13 @@ struct ShmMap {
       return false;
     }
     return true;
+#elif defined(__ANDROID__)
+    // bionic has no POSIX named shared memory before API 30 and the sandbox re-execs a helper
+    // binary an APK does not carry: report unsupported instead of pretending.
+    (void)name;
+    (void)size;
+    if (err) *err = "plugin sandbox is not supported on Android";
+    return false;
 #else
     int fd = ::shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
     if (fd < 0) {
@@ -324,6 +331,10 @@ struct ShmMap {
     if (!mapping) return false;
     mem = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, size);
     return mem != nullptr;
+#elif defined(__ANDROID__)
+    (void)name;
+    (void)size;
+    return false;
 #else
     int fd = ::shm_open(name.c_str(), O_RDWR, 0600);
     if (fd < 0) return false;
@@ -336,6 +347,8 @@ struct ShmMap {
   }
   static void unlinkName(const std::string& name) {
 #if defined(_WIN32)
+    (void)name;
+#elif defined(__ANDROID__)
     (void)name;
 #else
     ::shm_unlink(name.c_str());

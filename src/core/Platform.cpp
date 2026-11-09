@@ -41,13 +41,13 @@ extern char** environ;
 #include <sys/types.h>
 #endif
 
-#if defined(__linux__) && !defined(__GLIBC__)
+#if defined(__linux__) && !defined(__GLIBC__) && !defined(__ANDROID__)  // bionic has no pthread_setattr_default_np
 #include <pthread.h>
 #endif
 
 namespace fs = std::filesystem;
 
-#if defined(__linux__) && !defined(__GLIBC__)
+#if defined(__linux__) && !defined(__GLIBC__) && !defined(__ANDROID__)  // bionic has no pthread_setattr_default_np
 namespace {
 // musl gives new threads 128 KB of stack (glibc: 8 MB, from the stack limit). Audio rendering,
 // plugin and decoder threads need more: every thread of the process gets 8 MB.
@@ -724,8 +724,9 @@ bool Process::start(const std::string& exe, const std::vector<std::string>& args
     posix_spawnattr_setpgroup(&attr, 0);
     spawnFlags |= POSIX_SPAWN_SETPGROUP;
   }
-#if defined(POSIX_SPAWN_CLOEXEC_DEFAULT)
-  // macOS: only 0-2 and the listed descriptors reach the child.
+#if defined(POSIX_SPAWN_CLOEXEC_DEFAULT) && defined(__APPLE__)
+  // macOS: only 0-2 and the listed descriptors reach the child. (Bionic also defines the flag
+  // but has no addinherit_np; Android already closes unknown descriptors in the file actions.)
   spawnFlags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
   for (int f = 0; f < 3; ++f) posix_spawn_file_actions_addinherit_np(&fa, f);
 #endif
