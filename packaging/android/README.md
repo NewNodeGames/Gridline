@@ -14,6 +14,11 @@ What phase 2 added on top of phase 1:
   (API 26+) or OpenSL ES. PLAY/STOP run the transport; the status line shows the negotiated
   driver, rate and buffer (the SDL buffer is the only latency component SDL reports — the
   device-side AAudio latency is not exposed).
+- The engine runs with the desktop's automatic thread count (half the hardware threads) and
+  the output buffer is requested at 2048 frames — raised from 256 after the first tablet
+  report ("sound works but is very sluggish": one-core rendering starved the device; the large
+  buffer tolerates a slow core at the cost of ~43 ms round-trip). If tap response feels laggy,
+  drop `want.samples` in `android_main.cpp` to 1024 or 512.
 - Tempo is edited in the slider and **committed on release** (`IsItemDeactivatedAfterEdit`):
   a tempo change is a new tempo map in a rebuilt program; the audio thread keeps its position.
 - No `RECORD_AUDIO` in the manifest: the output path needs no permission, and declaring one
@@ -139,7 +144,7 @@ the app, like a plain back press. **PLAY/STOP** starts/stops the demo song ("Gri
 the tablet's speakers or headphones. The tempo slider edits the tempo **on release** (a tempo
 change is a new tempo map). **Reset song** stops the transport and reloads the demo. **Quit**
 exits. The status line under the version names the driver (`aaudio` or `openslES`), the
-negotiated rate and buffer — that buffer is the only latency figure SDL reports; AAudio's
+negotiated rate and buffer (2048 requested) — that buffer is the only latency figure SDL reports; AAudio's
 device-side latency is not exposed to apps.
 
 ## CI

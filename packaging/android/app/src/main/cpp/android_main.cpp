@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <thread>
 
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
@@ -118,6 +119,9 @@ int main(int /* argc */, char** /* argv */) {
   // instruments), so PLAY makes sound with nothing but the binary.
   gl::Song song = gl::makeDemoTrack();
   gl::AudioEngine engine(48000.0);
+  // The desktop auto-selects half the hardware threads (Settings audio.threads = 0); the
+  // engine's own default is one, which underruns a full demo arrangement on tablet cores.
+  engine.setThreads(std::clamp(static_cast<int>(std::thread::hardware_concurrency()) / 2, 1, 8));
   gl::ProgramBuilder builder;
   char audioStatus[256] = "no audio device";
   SDL_AudioDeviceID audioDevice = 0;
@@ -129,7 +133,7 @@ int main(int /* argc */, char** /* argv */) {
     want.freq = 48000;
     want.format = AUDIO_F32SYS;
     want.channels = 2;
-    want.samples = 256;  // ask small; SDL negotiates
+    want.samples = 2048;  // large buffer: tolerates slow tablet cores; costs ~43 ms round-trip. Try 1024/512 if tap response feels laggy.
     want.callback = audioCallback;
     want.userdata = &engine;
     audioDevice = SDL_OpenAudioDevice(nullptr, 0, &want, &have,
