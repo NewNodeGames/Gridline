@@ -9,7 +9,8 @@ audio backend (AAudio / OpenSL ES); the phase-2 debug APK was confirmed booting 
 though audio quality was reported bad and is deferred — the app now boots into the light
 starter after the demo proved too heavy for tablet CPUs (the same content is heavy on
 Winlator; the full demo is opt-in in the transport bar). The channel rack (phase-4 milestone
-1) builds in CI and is not yet tablet-tested. See the README in `packaging/android/` for
+1) playback of the starter song is verified smooth on a tablet (2026-11-10); the rack UI
+itself is not yet device-verified. See the README in `packaging/android/` for
 status, build instructions and the phase plan.
 
 Desktop features that will not come to Android in their desktop form: external plugin

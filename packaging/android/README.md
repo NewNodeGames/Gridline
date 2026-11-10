@@ -1,6 +1,6 @@
 # Gridline for Android
 
-Status: **phase 4 (channel rack, milestone 1) — CI build, not yet tablet-tested** (SDL2's
+Status: **phase 4 (channel rack, milestone 1) — starter-song playback verified smooth on a tablet (2026-11-10); rack UI not yet device-verified** (SDL2's
 Android audio backend drives the real `AudioEngine`; the channel rack is the app's screen).
 Phases 1–2 are tablet-tested; the demo song renders and PLAY makes sound, but playback was
 reported "not good at all" on the first tablet test, and the field tests then showed the demo
@@ -61,7 +61,9 @@ What phase 4 (milestone 1) adds — **the channel rack** (`android_rack.cpp` / `
 - Honest limits: the demo song's patterns are note-based (no drum step rows), so toggling a
   cell on a percussion channel adds a C5 melodic note — audible but not idiomatic drumming.
   Solo semantics are "mute everyone else"; they do not survive a Reset and are not saved.
-  Whether the rack *feels* right on glass has not been verified on a device yet — CI only.
+  Starter-song playback was verified smooth on the tester's tablet (2026-11-10, run #8
+  APK); whether the rack *feels* right on glass — layout, touch targets, editing flow —
+  has not been verified on a device yet (only audio smoothness confirmed).
   versionCode was bumped 4 → 5 for the starter-song APK so this APK can sideload over any
   earlier build (the phase-4 rack APK from run #7 is already versionCode 4).
 
@@ -175,7 +177,7 @@ set, so `.so` files ship uncompressed and 16 KB aligned.
 | 1 | `SDLActivity` + OpenGL ES 3 + Dear ImGui (`imgui_impl_opengl3`, GLSL ES 300), single live screen driven by a `gl::Song` | done — verified on a tablet (debug APK from CI) |
 | 2 | Audio: SDL2's Android backend (AAudio/OpenSL ES) driving `AudioEngine::processInterleaved` from the SDL callback; embedded demo song plays in Song mode; buffer-based latency readout | output path works; **`RECORD_AUDIO` deferred** until a capture path exists; device re-check pending |
 | 3 | Load/save projects via the Storage Access Framework; bundle `assets/` (sounds) in the APK or download on first run | file interop |
-| 4 | Tablet-first UI pass: channel rack, piano roll, playlist, mixer with finger-sized targets | milestone 1: channel rack (live mute/solo/gain/pan, 16-step note grid) — built in CI, not yet tablet-tested; piano roll next |
+| 4 | Tablet-first UI pass: channel rack, piano roll, playlist, mixer with finger-sized targets | milestone 1: channel rack (live mute/solo/gain/pan, 16-step note grid) — starter-song playback verified smooth on a tablet (2026-11-10); rack UI not yet device-verified; piano roll next |
 | 5 | MIDI via AMidi; background/foreground lifecycle, audio focus, process death | |
 | later | Collaboration in the field (libjuice over Android networks), Play Store packaging | keep `GRIDLINE_COLLAB=ON` |
 
