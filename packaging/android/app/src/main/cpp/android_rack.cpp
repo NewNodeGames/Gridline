@@ -290,19 +290,21 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
 
     // Gain / pan sliders (live: every edit rebuilds the program; the engine continues in place).
     float gain = channel->gain, pan = channel->pan;
-    ImGui::SetNextItemWidth(display.x * 0.24f);
+    ImGui::SetNextItemWidth(display.x * 0.28f);
     if (ImGui::SliderFloat("##gain", &gain, 0.0f, 1.25f, "Gain %.2f"))
       doc.editChannel(channel->id, "Channel gain", [gain](Channel& c) { c.gain = gain; }, /*mergeKey*/ 1);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(display.x * 0.20f);
+    ImGui::SetNextItemWidth(display.x * 0.24f);
     if (ImGui::SliderFloat("##pan", &pan, -1.0f, 1.0f, "Pan %+.2f"))
       doc.editChannel(channel->id, "Channel pan", [pan](Channel& c) { c.pan = pan; }, /*mergeKey*/ 2);
-    ImGui::SameLine();
+    // Mute / solo / delete on their own row: one row with the sliders clipped DEL off-screen
+    // on narrow displays, where the buttons are unclickable.
+    ImGui::Spacing();
     const bool armed = st.soloArmed && st.soloOwner == channel->id;
-    if (ImGui::Button(channel->muted ? "UNMUTE" : "MUTE", ImVec2(96.0f * s, 0.0f)))
+    if (ImGui::Button(channel->muted ? "UNMUTE" : "MUTE", ImVec2(108.0f * s, 40.0f * s)))
       doc.editChannel(channel->id, "Toggle mute", [](Channel& c) { c.muted = !c.muted; });
     ImGui::SameLine();
-    if (ImGui::Button(armed ? "UNOSOLO" : "SOLO", ImVec2(96.0f * s, 0.0f))) toggleSolo(st, doc, channel->id);
+    if (ImGui::Button(armed ? "UNOSOLO" : "SOLO", ImVec2(108.0f * s, 40.0f * s))) toggleSolo(st, doc, channel->id);
     ImGui::SameLine();
     // DEL: remove the channel and its notes from the in-memory song (undo restores). The
     // actual removal happens in the confirm popup (bottom of the frame), so nothing above it
@@ -310,7 +312,7 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
     const bool canDelete = doc.song().channels.size() > 1;
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.48f, 0.20f, 0.19f, 1.0f));
     ImGui::BeginDisabled(!canDelete);
-    if (ImGui::Button("DEL", ImVec2(64.0f * s, 0.0f))) {
+    if (ImGui::Button("DEL", ImVec2(84.0f * s, 40.0f * s))) {
       st.pendingDelete = channel->id;
       ImGui::OpenPopup("##deleteChannel");
     }
@@ -345,14 +347,18 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
 
     ImGui::Spacing();
 
-    // Steps / Roll segmented toggle.
-    if (st.detailMode == 0) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    // Steps / Roll segmented toggle. The pushed state is captured BEFORE the click each
+    // frame — pushing on entry and popping on the post-click state would underflow the
+    // StyleColor stack (that crashed the app on tap).
+    const bool stepsActive = st.detailMode == 0;
+    if (stepsActive) ImGui::PushStyleColor(ImGuiCol_Button, accent);
     if (ImGui::Button("Steps", ImVec2(64.0f * s, 28.0f * s))) st.detailMode = 0;
-    if (st.detailMode == 0) ImGui::PopStyleColor();
+    if (stepsActive) ImGui::PopStyleColor();
     ImGui::SameLine();
-    if (st.detailMode == 1) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    const bool rollActive = st.detailMode == 1;
+    if (rollActive) ImGui::PushStyleColor(ImGuiCol_Button, accent);
     if (ImGui::Button("Roll", ImVec2(64.0f * s, 28.0f * s))) st.detailMode = 1;
-    if (st.detailMode == 1) ImGui::PopStyleColor();
+    if (rollActive) ImGui::PopStyleColor();
 
     if (st.detailMode == 0) {
     // ---- the 16-step grid ----

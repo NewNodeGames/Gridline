@@ -77,8 +77,10 @@ What phase 4 (milestone 1) adds — **the channel rack** (`android_rack.cpp` / `
   (2026-11-10, run #8 APK); whether the rack *feels* right on glass — layout, touch targets,
   editing flow — has not been verified on a device yet (only audio smoothness confirmed; the
   piano roll and DEL are entirely untested on device).
-  versionCode was bumped 4 → 5 (starter-song APK) → 6 (piano roll + DEL milestone) so each
-  APK can sideload over any earlier build.
+  versionCode was bumped 4 → 5 (starter-song APK) → 6 (piano roll + DEL milestone) → 7
+  (fix: Roll/Steps toggle underflowed ImGui's StyleColor stack on tap — the app closed;
+  MUTE/SOLO/DEL moved to their own row so DEL cannot be clipped off-screen) so each APK can
+  sideload over any earlier build.
 
 What phase 1 added: the phase-0 plain `Activity` + JNI probe was replaced by
 `MainActivity : SDLActivity`. `libmain.so` (this is Gridline's process) links SDL2,
