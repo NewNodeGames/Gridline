@@ -1,4 +1,4 @@
-// Gridline — Android channel rack (phase 4, milestone 1). See android_rack.h for the contract.
+// Gridline — Android channel rack (phase 4, milestone 2). See android_rack.h for the contract.
 //
 // Layout (fullscreen, landscape tablet):
 //   top bar     GRIDLINE · pattern prev/next + picker · PAT/SONG mode · audio status · Quit
@@ -303,6 +303,19 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
       doc.editChannel(channel->id, "Toggle mute", [](Channel& c) { c.muted = !c.muted; });
     ImGui::SameLine();
     if (ImGui::Button(armed ? "UNOSOLO" : "SOLO", ImVec2(96.0f * s, 0.0f))) toggleSolo(st, doc, channel->id);
+    ImGui::SameLine();
+    // DEL: remove the channel and its notes from the in-memory song (undo restores). The
+    // actual removal happens in the confirm popup (bottom of the frame), so nothing above it
+    // reads stale song state this frame.
+    const bool canDelete = doc.song().channels.size() > 1;
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.48f, 0.20f, 0.19f, 1.0f));
+    ImGui::BeginDisabled(!canDelete);
+    if (ImGui::Button("DEL", ImVec2(64.0f * s, 0.0f))) {
+      st.pendingDelete = channel->id;
+      ImGui::OpenPopup("##deleteChannel");
+    }
+    ImGui::EndDisabled();
+    ImGui::PopStyleColor();
     // SOLO swaps the song's fields — re-fetch both pointers before anything below reads them.
     pattern = findPattern(doc.song(), st.selectedPattern);
     channel = findChannel(doc.song(), st.selectedChannel);
@@ -332,6 +345,16 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
 
     ImGui::Spacing();
 
+    // Steps / Roll segmented toggle.
+    if (st.detailMode == 0) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    if (ImGui::Button("Steps", ImVec2(64.0f * s, 28.0f * s))) st.detailMode = 0;
+    if (st.detailMode == 0) ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (st.detailMode == 1) ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    if (ImGui::Button("Roll", ImVec2(64.0f * s, 28.0f * s))) st.detailMode = 1;
+    if (st.detailMode == 1) ImGui::PopStyleColor();
+
+    if (st.detailMode == 0) {
     // ---- the 16-step grid ----
     const int steps = stepsPerBar;
     const float gap = 4.0f * s;
@@ -421,6 +444,136 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
     ImGui::TextUnformatted("Tap a cell to add/remove a note (C5). Existing notes in a cell are replaced as a group.");
     ImGui::TextUnformatted("Edits are live and in-memory only — nothing is saved to a file.");
     ImGui::PopStyleColor();
+    } else {
+      // ---- the piano roll: tap a cell to add/remove a note at that pitch ----
+      const int steps = stepsPerBar;
+      const float gap = 4.0f * s;
+      const float avail = ImGui::GetContentRegionAvail().x;
+      const float gutter = 46.0f * s;
+      const float cellW = std::max(28.0f * s, (avail - gutter - gap * (steps - 1)) / static_cast<float>(steps));
+      const Tick cellTicks = tps;
+      const Tick barBase = static_cast<Tick>(st.bar) * stepsPerBar * cellTicks;
+
+      // Pitch window: content bbox (±6 semitones), shifted by rollPitchShift, >= 24 rows, clamped 0..127.
+      int lo = 127, hi = 0;
+      bool anyNote = false;
+      if (const auto it = pattern->notes.find(channel->id); it != pattern->notes.end())
+        for (const Note& n : it->second) { lo = std::min(lo, n.pitch); hi = std::max(hi, n.pitch); anyNote = true; }
+      if (!anyNote) {
+        lo = 48; hi = 83;
+      } else {
+        lo = std::max(0, lo - 6); hi = std::min(127, hi + 6);
+      }
+      lo += st.rollPitchShift; hi += st.rollPitchShift;
+      if (lo < 0) { hi = std::min(127, hi - lo); lo = 0; }
+      if (hi > 127) { lo = std::max(0, lo - (hi - 127)); hi = 127; }
+      if (hi - lo < 23) hi = std::min(127, lo + 23);
+      const int rows = hi - lo + 1;
+
+      const float legendH = 46.0f * s;
+      const float areaH = std::max(160.0f * s, ImGui::GetContentRegionAvail().y - legendH);
+      const float cellPitch = std::min(30.0f * s, areaH / static_cast<float>(rows));
+      const float gridW = gutter + steps * (cellW + gap) - gap;
+      const float gridH = rows * cellPitch;
+
+      const ImVec2 gridMin = ImGui::GetCursorScreenPos();
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      for (int r = 0; r < rows; ++r) {
+        const int pitch = hi - r;
+        const float y0 = gridMin.y + r * cellPitch, y1 = y0 + cellPitch;
+        const int pc = pitch % 12;
+        const bool black = (pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10);
+        dl->AddRectFilled(ImVec2(gridMin.x, y0), ImVec2(gridMin.x + gridW, y1),
+                          black ? IM_COL32(255, 255, 255, 7) : IM_COL32(255, 255, 255, 16));
+        if (pc == 0) {
+          char lbl[8];
+          std::snprintf(lbl, sizeof lbl, "C%d", pitch / 12 - 1);
+          dl->AddText(ImVec2(gridMin.x + 3.0f * s, y0 + (cellPitch - ImGui::GetTextLineHeight()) * 0.5f),
+                      IM_COL32(175, 175, 183, 255), lbl);
+          dl->AddLine(ImVec2(gridMin.x, y1), ImVec2(gridMin.x + gridW, y1), IM_COL32(255, 255, 255, 38));
+        } else {
+          dl->AddLine(ImVec2(gridMin.x + gutter, y1), ImVec2(gridMin.x + gridW, y1), IM_COL32(255, 255, 255, 10));
+        }
+      }
+      // beat separators every 4 steps
+      for (int i = 0; i <= steps; i += 4) {
+        const float x = gridMin.x + gutter + static_cast<float>(i) * (cellW + gap) - gap * 0.5f;
+        dl->AddRectFilled(ImVec2(x - 1.0f, gridMin.y), ImVec2(x + 1.0f, gridMin.y + gridH), IM_COL32(255, 255, 255, 34));
+      }
+      // notes overlapping the visible bar (velocity -> alpha)
+      if (const auto it = pattern->notes.find(channel->id); it != pattern->notes.end()) {
+        for (const Note& n : it->second) {
+          if (n.pitch < lo || n.pitch > hi) continue;
+          const double rel = static_cast<double>(n.start - barBase) / static_cast<double>(cellTicks);
+          const double relEnd = rel + static_cast<double>(std::max<Tick>(n.length, 1)) / static_cast<double>(cellTicks);
+          if (relEnd <= 0.0 || rel >= steps) continue;
+          const int r = hi - n.pitch;
+          const float x0 = gridMin.x + gutter + static_cast<float>(std::max(0.0, rel)) * (cellW + gap);
+          const float x1 = gridMin.x + gutter + static_cast<float>(std::min(static_cast<double>(steps), relEnd)) * (cellW + gap) - gap;
+          const float y0 = gridMin.y + r * cellPitch + 2.0f, y1 = gridMin.y + (r + 1) * cellPitch - 2.0f;
+          const int a = 100 + (n.velocity * 155) / 127;
+          const float xe = std::max(x1, x0 + cellW * 0.35f);
+          dl->AddRectFilled(ImVec2(x0, y0), ImVec2(xe, y1), channelColor(channel->color, a), 4.0f * s);
+          dl->AddRect(ImVec2(x0, y0), ImVec2(xe, y1), IM_COL32(0, 0, 0, 120), 4.0f * s, 0, 1.0f);
+        }
+      }
+      // playhead over the visible bar
+      if (engine.playing() && engine.mode() == gl::PlayMode::Pattern) {
+        const double pos = engine.position();
+        const Tick patLen = song.patternLength(*pattern);
+        double inPat = patLen > 0 ? std::fmod(pos, static_cast<double>(patLen)) : 0.0;
+        const double rel = (inPat - static_cast<double>(barBase)) / static_cast<double>(cellTicks);
+        if (rel >= 0.0 && rel < steps) {
+          const float x = gridMin.x + gutter + static_cast<float>(rel) * (cellW + gap);
+          dl->AddRectFilled(ImVec2(x - 1.0f, gridMin.y - 3.0f * s), ImVec2(x + 1.0f, gridMin.y + gridH + 3.0f * s),
+                            IM_COL32(240, 240, 245, 220));
+        }
+      }
+      // one invisible button over the roll; hit-test pitch (row) and step (column)
+      ImGui::SetCursorScreenPos(gridMin);
+      ImGui::InvisibleButton("##roll", ImVec2(gridW, gridH));
+      const ImVec2 m = ImGui::GetIO().MousePos;
+      const int hr = static_cast<int>((m.y - gridMin.y) / cellPitch);
+      const float fx = (m.x - (gridMin.x + gutter)) / (cellW + gap);
+      const int hc = static_cast<int>(fx);
+      const float inb = fx - hc;
+      const bool inGrid = m.x >= gridMin.x + gutter && hr >= 0 && hr < rows && hc >= 0 && hc < steps &&
+                          inb * (cellW + gap) <= cellW;
+      if (ImGui::IsItemHovered() && inGrid) {
+        const float y0 = gridMin.y + hr * cellPitch;
+        const float x0 = gridMin.x + gutter + hc * (cellW + gap);
+        dl->AddRect(ImVec2(x0, y0), ImVec2(x0 + cellW, y0 + cellPitch), IM_COL32(255, 255, 255, 90), 4.0f * s, 0, 1.5f);
+      }
+      if (ImGui::IsItemClicked() && inGrid) {
+        const int pitch = hi - hr;
+        const Tick from = barBase + static_cast<Tick>(hc) * cellTicks;
+        const Tick to = from + cellTicks;
+        doc.editPattern(pattern->id, "Toggle roll note", [&](Pattern& p) {
+          auto& rowN = p.notes[channel->id];
+          bool removed = false;
+          for (auto it2 = rowN.begin(); it2 != rowN.end();) {
+            const Tick len = std::max<Tick>(it2->length, 1);
+            if (it2->pitch == pitch && it2->start < to && it2->start + len > from) { it2 = rowN.erase(it2); removed = true; }
+            else ++it2;
+          }
+          if (!removed) rowN.push_back(Note(from, cellTicks, pitch, 100));
+          std::sort(rowN.begin(), rowN.end(), [](const Note& a, const Note& b) { return a.start < b.start; });
+        });
+      }
+      ImGui::SetCursorScreenPos(ImVec2(gridMin.x, gridMin.y + gridH + 6.0f * s));
+      ImGui::Spacing();
+      if (ImGui::Button("- 8va", ImVec2(56.0f * s, 26.0f * s))) st.rollPitchShift = std::max(-48, st.rollPitchShift - 12);
+      ImGui::SameLine();
+      if (ImGui::Button("+ 8va", ImVec2(56.0f * s, 26.0f * s))) st.rollPitchShift = std::min(48, st.rollPitchShift + 12);
+      ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Text, dim);
+      ImGui::TextUnformatted("pitch window");
+      ImGui::PopStyleColor();
+      ImGui::PushStyleColor(ImGuiCol_Text, dim);
+      ImGui::TextUnformatted("Roll — tap an empty cell to add a note, tap a note to remove it. Fixed velocity; no drag-move yet.");
+      ImGui::TextUnformatted("Edits are live and in-memory only — nothing is saved to a file.");
+      ImGui::PopStyleColor();
+    }
   } else {
     ImGui::TextUnformatted("no channel selected");
   }
@@ -508,8 +661,43 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
     if (ImGui::Button("Keep starter", ImVec2(120.0f * s, 40.0f * s))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
+  // DEL confirm: removeChannel is undoable (notes/steps go with the channel). It may swap
+  // the song's fields internally, so nothing below reads song refs this frame.
+  bool docSwapped = false;
+  if (ImGui::BeginPopupModal("##deleteChannel", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const Channel* doomed = findChannel(doc.song(), st.pendingDelete);
+    char title[128];
+    if (doomed) std::snprintf(title, sizeof title, "Delete channel '%s'?", doomed->name.c_str());
+    else std::snprintf(title, sizeof title, "Delete channel?");
+    ImGui::TextUnformatted(title);
+    ImGui::TextUnformatted("Its notes go with it. Undo restores everything.");
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.22f, 0.21f, 1.0f));
+    if (ImGui::Button("Delete", ImVec2(120.0f * s, 40.0f * s))) {
+      if (doomed) {
+        const ObjectId gone = doomed->id;
+        doc.removeChannel(gone);
+        st.soloPrior.erase(std::remove_if(st.soloPrior.begin(), st.soloPrior.end(),
+                                          [gone](const std::pair<ObjectId, bool>& pr) { return pr.first == gone; }),
+                           st.soloPrior.end());
+        if (st.soloArmed && st.soloOwner == gone) { st.soloArmed = false; st.soloOwner = kNoId; }
+        const auto& chans = doc.song().channels;
+        st.selectedChannel = chans.empty() ? kNoId : chans.front().id;
+        docSwapped = true;
+      }
+      st.pendingDelete = kNoId;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (ImGui::Button("Keep", ImVec2(120.0f * s, 40.0f * s))) {
+      st.pendingDelete = kNoId;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
   ImGui::End();
-
+  if (docSwapped) return false;  // one frame skipped; next frame re-reads the new song
   return quit;
 }
 

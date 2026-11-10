@@ -1,12 +1,14 @@
-// Gridline for Android — the channel rack (phase 4, milestone 1).
+// Gridline for Android — the channel rack (phase 4, milestone 2).
 //
 // A tablet-first, purpose-built view (not a port of the desktop rack): the channel list on
 // the left (select, mute, gain — pan in the detail panel), the selected channel on the right
-// with a 16-step piano grid for the selected pattern (toggle notes in place), transport and
+// with either a 16-step piano grid (toggle notes in place) or a piano roll (per-pitch cells,
+// tap to add / remove notes, pitch window auto-fitted to content with octave shift), plus
+// delete-channel (DEL) for thinning songs out. Transport and
 // pattern selection in the bars above and below. Everything edits the in-memory gl::Document;
 // the engine rebuilds its program when the document revision changes (same contract as the
-// desktop). Undo/redo via Document. Step/note editing is 16th-grid only — no drag-paint, no
-// velocity painting (next milestones), no files, no undo persistence across resets.
+// desktop). Undo/redo via Document. No drag-paint, no velocity painting, no selection marquee
+// (later milestones), no files, no undo persistence across resets.
 #pragma once
 #include <utility>
 #include <vector>
@@ -32,6 +34,9 @@ struct RackState {
   bool soloArmed = false;
   ObjectId soloOwner = kNoId;
   std::vector<std::pair<ObjectId, bool>> soloPrior;  // channel id -> muted before solo
+  int detailMode = 0;   // 0 = step grid (16 steps/bar), 1 = piano roll (per-pitch cells)
+  int rollPitchShift = 0;  // semitone shift of the roll window (octave buttons), clamped to ±48
+  ObjectId pendingDelete = kNoId;  // channel awaiting the DEL confirm popup
 };
 
 // Picks the first pattern/channel, puts the engine in Pattern mode. Call once after the
