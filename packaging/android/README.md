@@ -1,6 +1,6 @@
 # Gridline for Android
 
-Status: **phase 4 (channel rack, milestone 2: piano roll + delete-channel) — CI build, not yet device-tested** (starter-song playback verified smooth on a tablet 2026-11-10; the milestone-1 rack UI itself is not yet reviewed on device). SDL2's
+Status: **phase 4 (channel rack, milestone 3: piano roll depth — CI build, not yet device-tested)** (starter-song playback verified smooth on a tablet 2026-11-10; roll tap-edit verified on a tablet 2026-11-10 — app stopped closing on Roll tap and notes place/remove on the grid; DEL now opens its confirm dialog, unverified). SDL2's
 Android audio backend drives the real `AudioEngine`; the channel rack is the app's screen).
 Phases 1–2 are tablet-tested; the demo song renders and PLAY makes sound, but playback was
 reported "not good at all" on the first tablet test, and the field tests then showed the demo
@@ -61,26 +61,39 @@ What phase 4 (milestone 1) adds — **the channel rack** (`android_rack.cpp` / `
 - **Piano roll (milestone 2):** a Steps/Roll segmented toggle in the detail panel. Roll mode
   shows per-pitch cells of the selected pattern's visible bar (black-key rows shaded, C-row
   labels); the pitch window auto-fits the channel's content (±6 semitones, minimum 24 rows,
-  C-clamped 0..127) and the **−8va / +8va** buttons shift it an octave at a time. Tap an empty
-  cell to add a note (fixed velocity 100, one step long), tap a note to remove it. Notes render
-  with velocity mapped to their alpha. A playhead tracks Pattern-mode playback, as in Steps mode.
+  C-clamped 0..127) and the **−8va / +8va** buttons (or the mouse wheel over the grid) shift it
+  an octave at a time. Tap an empty cell to add a note (fixed velocity 100, one snap unit long),
+  tap a note to remove it. Notes render with velocity mapped to their alpha. A playhead tracks
+  Pattern-mode playback, as in Steps mode.
+- **Piano roll depth (milestone 3):** **mouse wheel over the roll jumps the pitch window one
+  octave per notch** (consumed so the panel does not scroll); a **Snap selector (1/8 · 1/16 ·
+  1/32, default 1/16)** re-columns the grid — 8/16/32 columns per bar, placement and resize
+  snap to it (1/32 = half a pattern step = 12 ticks at the default PPQ), and beat separators
+  follow the cadence (2/4/8 columns); **drag a note's right edge** (within ~10 dp of the edge,
+  touch or mouse) to resize its length live — one merged undo entry per drag, minimum one snap
+  unit, clamped inside the pattern, note start unchanged.
 - **Delete channel (milestone 2):** the **DEL** button in the detail panel deletes the
   selected channel and its pattern notes/steps in one undoable step (`Document::removeChannel`;
   Undo restores everything). Disabled when only one channel remains. This exists for thinning
   heavy songs on-device — e.g. deleting the demo's analog/FM channels one by one to find the
-  CPU cost interactively.
+  CPU cost interactively. (Milestone 3 fixed why it appeared to do nothing: the button opened
+  the `##deleteChannel` popup in the detail window but the modal was rendered in the transport
+  window, where ImGui computes a different ID — the confirm never appeared. The popup now lives
+  in the detail window with its opener, and the post-swap frame is skipped so nothing reads a
+  stale song reference.)
 - Honest limits: the demo song's patterns are note-based (no drum step rows), so toggling a
   cell on a percussion channel adds a C5 melodic note — audible but not idiomatic drumming.
   Solo semantics are "mute everyone else"; they do not survive a Reset and are not saved.
-  Roll omissions on purpose: no drag-move/resize, no selection marquee, no velocity editing,
+  Roll omissions on purpose: no drag-move, no selection marquee, no velocity editing,
   no note audition on tap. Starter-song playback was verified smooth on the tester's tablet
   (2026-11-10, run #8 APK); whether the rack *feels* right on glass — layout, touch targets,
   editing flow — has not been verified on a device yet (only audio smoothness confirmed; the
   piano roll and DEL are entirely untested on device).
   versionCode was bumped 4 → 5 (starter-song APK) → 6 (piano roll + DEL milestone) → 7
   (fix: Roll/Steps toggle underflowed ImGui's StyleColor stack on tap — the app closed;
-  MUTE/SOLO/DEL moved to their own row so DEL cannot be clipped off-screen) so each APK can
-  sideload over any earlier build.
+  MUTE/SOLO/DEL moved to their own row so DEL cannot be clipped off-screen) → 8 (piano roll
+  depth milestone + DEL confirm fix: OpenPopup and BeginPopupModal ran in different ImGui
+  windows, so DEL never did anything) so each APK can sideload over any earlier build.
 
 What phase 1 added: the phase-0 plain `Activity` + JNI probe was replaced by
 `MainActivity : SDLActivity`. `libmain.so` (this is Gridline's process) links SDL2,
@@ -192,7 +205,7 @@ set, so `.so` files ship uncompressed and 16 KB aligned.
 | 1 | `SDLActivity` + OpenGL ES 3 + Dear ImGui (`imgui_impl_opengl3`, GLSL ES 300), single live screen driven by a `gl::Song` | done — verified on a tablet (debug APK from CI) |
 | 2 | Audio: SDL2's Android backend (AAudio/OpenSL ES) driving `AudioEngine::processInterleaved` from the SDL callback; embedded demo song plays in Song mode; buffer-based latency readout | output path works; **`RECORD_AUDIO` deferred** until a capture path exists; device re-check pending |
 | 3 | Load/save projects via the Storage Access Framework; bundle `assets/` (sounds) in the APK or download on first run | file interop |
-| 4 | Tablet-first UI pass: channel rack, piano roll, playlist, mixer with finger-sized targets | milestone 1: channel rack (live mute/solo/gain/pan, 16-step note grid) — starter-song playback verified smooth on a tablet (2026-11-10); rack UI not yet device-verified · milestone 2: piano roll (Steps/Roll toggle, octave window, per-pitch toggle) + delete-channel with undo — not yet device-tested |
+| 4 | Tablet-first UI pass: channel rack, piano roll, playlist, mixer with finger-sized targets | milestone 1: channel rack (live mute/solo/gain/pan, 16-step note grid) — starter-song playback verified smooth on a tablet (2026-11-10); rack UI not yet device-verified · milestone 2: piano roll (Steps/Roll toggle, octave window, per-pitch toggle) + delete-channel with undo — tap-edit verified on a tablet 2026-11-10, DEL fixed in milestone 3 · milestone 3: wheel octave jump, snap selector 1/8/1/16/1/32, drag-to-resize notes, DEL confirm popup ID-scope fix — not yet device-tested |
 | 5 | MIDI via AMidi; background/foreground lifecycle, audio focus, process death | |
 | later | Collaboration in the field (libjuice over Android networks), Play Store packaging | keep `GRIDLINE_COLLAB=ON` |
 
