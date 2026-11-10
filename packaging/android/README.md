@@ -3,9 +3,12 @@
 Status: **phase 4 (channel rack, milestone 1) — CI build, not yet tablet-tested** (SDL2's
 Android audio backend drives the real `AudioEngine`; the channel rack is the app's screen).
 Phases 1–2 are tablet-tested; the demo song renders and PLAY makes sound, but playback was
-reported "not good at all" on the first tablet test (audio work deferred, see the phase-2
-notes). The app boots SDL2, creates an ES 3 context, renders ImGui frames and opens an
-AAudio-or-OpenSL-ES output device. Touch works as a mouse. Phase 0 (below) is done.
+reported "not good at all" on the first tablet test, and the field tests then showed the demo
+song itself overloads tablet CPUs — the same content is heavy on Winlator, while an empty
+project is fine (audio work deferred, see the phase-2 notes). The app therefore boots into a
+small built-in **starter song**; the full demo is opt-in behind a CPU warning. The app boots
+SDL2, creates an ES 3 context, renders ImGui frames and opens an AAudio-or-OpenSL-ES output
+device. Touch works as a mouse. Phase 0 (below) is done.
 
 What phase 2 added on top of phase 1:
 
@@ -37,10 +40,17 @@ What phase 4 (milestone 1) adds — **the channel rack** (`android_rack.cpp` / `
   multi-bar patterns). Every cell is a toggle: empty → adds a C5 note, occupied (one or more
   notes overlapping the step) → removes those notes. A playhead line tracks Pattern-mode
   playback across the visible bar.
+- The app boots into a small built-in **starter song** (`android_starter.cpp`: kick, hat,
+  sub-bass analog preset copied from the demo's own; one two-bar pattern; no automation;
+  master bus only). Measured load for context: the demo is 23 channels (~14 pitched
+  analog/FM voices), 2,668 notes across 65 patterns and 20 automation lanes; the starter is
+  4 notes/bar + 8 notes/bar + 1 kept bass line over 2 bars on 3 channels. **Reset** restores
+  the starter; **Demo** loads the full embedded demo behind a stutter warning.
 - Editing is live and in-memory only: every change is an undoable `gl::Document` edit; the
   engine program is rebuilt when the document revision moves (the same contract the desktop
-  uses). Undo/redo buttons in the transport bar. Nothing is written to a file; the demo song
-  is reloaded by Reset. Solo is FL-style: it mutes every other channel in one edit step and
+  uses). Undo/redo buttons in the transport bar. Nothing is written to a file; the starter
+  song is restored by Reset; the demo is opt-in via the Demo button. Solo is FL-style: it
+  mutes every other channel in one edit step and
   restores the pre-solo mute mix when toggled again (the channel model has no solo flag).
 - Default transport mode is now **Pattern** (the rack's editing context); SONG plays the full
   playlist arrangement as before.
@@ -52,7 +62,8 @@ What phase 4 (milestone 1) adds — **the channel rack** (`android_rack.cpp` / `
   cell on a percussion channel adds a C5 melodic note — audible but not idiomatic drumming.
   Solo semantics are "mute everyone else"; they do not survive a Reset and are not saved.
   Whether the rack *feels* right on glass has not been verified on a device yet — CI only.
-  versionCode was bumped 3 → 4 so this APK can sideload over the phase-2 install.
+  versionCode was bumped 4 → 5 for the starter-song APK so this APK can sideload over any
+  earlier build (the phase-4 rack APK from run #7 is already versionCode 4).
 
 What phase 1 added: the phase-0 plain `Activity` + JNI probe was replaced by
 `MainActivity : SDLActivity`. `libmain.so` (this is Gridline's process) links SDL2,
@@ -164,18 +175,21 @@ set, so `.so` files ship uncompressed and 16 KB aligned.
 | 1 | `SDLActivity` + OpenGL ES 3 + Dear ImGui (`imgui_impl_opengl3`, GLSL ES 300), single live screen driven by a `gl::Song` | done — verified on a tablet (debug APK from CI) |
 | 2 | Audio: SDL2's Android backend (AAudio/OpenSL ES) driving `AudioEngine::processInterleaved` from the SDL callback; embedded demo song plays in Song mode; buffer-based latency readout | output path works; **`RECORD_AUDIO` deferred** until a capture path exists; device re-check pending |
 | 3 | Load/save projects via the Storage Access Framework; bundle `assets/` (sounds) in the APK or download on first run | file interop |
-| 4 | Tablet-first UI pass: channel rack, piano roll, playlist, mixer with finger-sized targets | the big one |
+| 4 | Tablet-first UI pass: channel rack, piano roll, playlist, mixer with finger-sized targets | milestone 1: channel rack (live mute/solo/gain/pan, 16-step note grid) — built in CI, not yet tablet-tested; piano roll next |
 | 5 | MIDI via AMidi; background/foreground lifecycle, audio focus, process death | |
 | later | Collaboration in the field (libjuice over Android networks), Play Store packaging | keep `GRIDLINE_COLLAB=ON` |
 
-## Controls (phase 2)
+## Controls (phase 4, milestone 1)
 
-Tap/drag = mouse (via `SDL_TOUCH_MOUSE_EVENTS`). The **Back** button is not trapped — it quits
-the app, like a plain back press. **PLAY/STOP** starts/stops the demo song ("Gridline") through
-the tablet's speakers or headphones. The tempo slider edits the tempo **on release** (a tempo
-change is a new tempo map). **Reset song** stops the transport and reloads the demo. **Quit**
-exits. The status line under the version names the driver (`aaudio` or `openslES`), the
-negotiated rate and buffer (2048 requested) — that buffer is the only latency figure SDL reports; AAudio's
+Tap/drag = mouse (via `SDL_TOUCH_MOUSE_EVENTS`; finger-drag scrolls the channel list). The
+**Back** button is not trapped — it quits the app, like a plain back press.
+**PLAY/STOP** starts/stops the current song (the starter, or the full demo when loaded) in
+PAT mode; the **SONG** toggle plays the whole playlist arrangement. The grid shows the
+selected pattern; taps add/remove notes. Tempo edits commit **on release** (a tempo change is
+a new tempo map). **Undo/Redo** step the document history. **Reset** stops the transport and
+reloads the starter; **Demo** loads the full demo behind a confirmation. **Quit** exits. The
+status line in the top bar names the driver (`aaudio` or `openslES`), the negotiated rate and
+buffer (2048 requested) — that buffer is the only latency figure SDL reports; AAudio's
 device-side latency is not exposed to apps.
 
 ## CI

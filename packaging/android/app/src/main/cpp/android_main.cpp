@@ -7,10 +7,13 @@
 // or drag. The back button is not trapped: Android sends SDL_QUIT and the app exits cleanly.
 //
 // Phase 2 engine audio + phase 4 channel rack. The AudioEngine (the same realtime engine the
-// desktop app drives) renders the embedded demo song — "Gridline", all built-in instruments,
-// no samples — through SDL's Android audio backend (AAudio on API 26+, OpenSL ES otherwise).
+// desktop app drives) renders the built-in starter song (all built-in instruments, no
+// samples; the full demo is opt-in) through SDL's Android audio backend (AAudio on API 26+,
+// OpenSL ES otherwise).
 // android_rack.cpp draws the channel rack (phase-4 milestone 1): live mute/solo/gain/pan,
 // a 16-step note grid per channel for the selected pattern, PAT/SONG transport, undo/redo.
+// android_starter.cpp builds the small boot project (kick, hat, sub bass); the full demo is
+// opt-in via the Demo button (it overloads tablet CPUs).
 // RECORD_AUDIO is deliberately NOT declared yet: there is no capture path in this skeleton,
 // and an unused permission only invites Play review questions. Output latency is reported as
 // the negotiated buffer (SDL does not expose the device-side AAudio latency). Audio focus
@@ -32,6 +35,7 @@
 #include "core/Song.h"
 #include "core/Demo.h"
 #include "core/Document.h"
+#include "android_starter.h"
 #include "engine/AudioEngine.h"
 #include "engine/Program.h"
 #include "android_rack.h"
@@ -119,13 +123,13 @@ int main(int /* argc */, char** /* argv */) {
   ImGui_ImplOpenGL3_Init("#version 300 es");
 
   // ---- phase 2 + phase 4: the engine and its Android audio device, driving the channel rack ----
-  // The live rack edits an in-memory gl::Document (the demo song "Gridline", all built-in
-  // instruments, no samples); PLAY runs the selected pattern / the playlist arrangement through
+  // The live rack edits an in-memory gl::Document (the light starter song, all built-in
+  // instruments, no samples; the full demo is opt-in); PLAY runs the selected pattern through
   // SDL's Android audio backend into AAudio. RECORD_AUDIO is deliberately NOT declared yet:
   // there is no capture path in this skeleton, and an unused permission only invites Play
   // review questions. Output latency is reported as the negotiated buffer (SDL does not expose
   // the device-side AAudio latency). Audio focus and background/foreground lifecycle are phase 5.
-  gl::Document doc(gl::makeDemoTrack());
+  gl::Document doc(gl::android::makeLightStarterSong());  // boots into the starter; demo is opt-in
   gl::AudioEngine engine(48000.0);
   // The desktop auto-selects half the hardware threads (Settings audio.threads = 0); the
   // engine's own default is one, which underruns a full demo arrangement on tablet cores.

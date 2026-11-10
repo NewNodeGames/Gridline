@@ -15,7 +15,7 @@ android {
         minSdk 28        // Android 9+: bionic posix_spawn (Process::start), AAudio, 64-bit only in practice.
         // (Android 8 is API 26; raising to 28 covers 95%+ of devices and avoids an exec shim)
         targetSdk 35
-        versionCode 4
+        versionCode 5
         versionName gridlineVersion
         ndk {
             // arm64-v8a: devices. x86_64: emulator on x86_64 hosts.

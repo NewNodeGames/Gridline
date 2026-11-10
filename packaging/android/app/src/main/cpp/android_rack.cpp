@@ -5,7 +5,7 @@
 //   left        channel list (select · mute · solo), scrollable
 //   right       selected channel detail: name/plugin, gain + pan, 16-step grid of the
 //               selected pattern (toggle notes), bar switcher for multi-bar patterns
-//   bottom bar  transport: PLAY/STOP · position · tempo · undo/redo · reset demo
+//   bottom bar  transport: PLAY/STOP · position · tempo · undo/redo · Reset (starter) · Demo (heavy)
 //
 // Editing contract: every change is a gl::Document edit (undoable, single step for solo).
 // The audio thread's program is rebuilt whenever doc.revision() moves — the same contract
@@ -15,11 +15,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <vector>
 
 #include "imgui.h"
 
 #include "core/Demo.h"
+#include "android_starter.h"
 
 namespace gl::android {
 namespace {
@@ -466,24 +468,44 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
   ImGui::SameLine();
   if (ImGui::Button("Redo", ImVec2(76.0f * s, 44.0f * s))) doc.redo();
   ImGui::SameLine();
-  if (ImGui::Button("Reset demo", ImVec2(110.0f * s, 44.0f * s))) ImGui::OpenPopup("##resetConfirm");
+  if (ImGui::Button("Reset", ImVec2(96.0f * s, 44.0f * s))) ImGui::OpenPopup("##resetConfirm");
+  ImGui::SameLine();
+  if (ImGui::Button("Demo", ImVec2(76.0f * s, 44.0f * s))) ImGui::OpenPopup("##demoConfirm");
 
-  // Reset confirmation: live edits are discarded.
+  // Swaps in a fresh built-in song. `song` (bound at the top of the frame) dangles after this;
+  // nothing below the popups reads it.
+  auto reloadWith = [&](const std::function<gl::Song()>& factory) {
+    engine.stopToStart();
+    doc = gl::Document(factory());
+    engine.setMode(gl::PlayMode::Pattern);
+    rackInit(doc, engine, st);
+    st.builtRevision = ~uint64_t{0};  // force rebuild from the new song
+  };
+
+  // Both confirmations discard the live edits (they were never saved).
   if (ImGui::BeginPopupModal("##resetConfirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::TextUnformatted("Reset to the demo song?");
+    ImGui::TextUnformatted("Reset to the starter song?");
     ImGui::TextUnformatted("Your live edits are discarded (they were never saved).");
     ImGui::Spacing();
     if (ImGui::Button("Reset", ImVec2(120.0f * s, 40.0f * s))) {
-      engine.stopToStart();
-      doc = gl::Document(gl::makeDemoTrack());
-      engine.setMode(gl::PlayMode::Pattern);
-      rackInit(doc, engine, st);
-      st.builtRevision = ~uint64_t{0};  // force rebuild from the new song
-      // `song` dangles after this (doc was reassigned) but nothing below reads it this frame.
+      reloadWith(gl::android::makeLightStarterSong);
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
     if (ImGui::Button("Keep editing", ImVec2(120.0f * s, 40.0f * s))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+  if (ImGui::BeginPopupModal("##demoConfirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::TextUnformatted("Load the full demo song?");
+    ImGui::TextUnformatted("It is very heavy on this device; playback will likely stutter.");
+    ImGui::TextUnformatted("Your live edits are discarded (they were never saved).");
+    ImGui::Spacing();
+    if (ImGui::Button("Load demo", ImVec2(120.0f * s, 40.0f * s))) {
+      reloadWith(gl::makeDemoTrack);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Keep starter", ImVec2(120.0f * s, 40.0f * s))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
   ImGui::End();
