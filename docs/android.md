@@ -11,9 +11,11 @@ starter after the demo proved too heavy for tablet CPUs (the same content is hea
 Winlator; the full demo is opt-in in the transport bar). The channel rack (phase-4 milestone
 1) playback of the starter song is verified smooth on a tablet (2026-11-10); the rack UI
 itself is not yet device-verified; milestone 2 adds a piano roll and delete-channel;
-milestone 3 (CI build, not device-tested) adds roll depth — mouse-wheel octave jump,
+milestone 3 (device-verified on a tablet 2026-11-10) adds roll depth — mouse-wheel octave jump,
 a 1/8/1/16/1/32 snap selector, drag-to-resize notes — and fixes the DEL confirm, which never
-appeared because it was rendered in a different ImGui window than its opener. See the README in `packaging/android/` for
+appeared because it was rendered in a different ImGui window than its opener; milestone 4
+(CI build, not device-tested) makes the pitch window persistent and expand-only (no re-fit on
+note add) and draws faint 1/16-cadence column lines. See the README in `packaging/android/` for
 status, build instructions and the phase plan.
 
 Desktop features that will not come to Android in their desktop form: external plugin

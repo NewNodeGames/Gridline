@@ -461,20 +461,23 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
       const int cols = static_cast<int>(std::max<Tick>(1, barTicks / cellTicks));
       const Tick barBase = static_cast<Tick>(st.bar) * barTicks;
 
-      // Pitch window: content bbox (±6 semitones), shifted by rollPitchShift, >= 24 rows, clamped 0..127.
-      int lo = 127, hi = 0;
+      // Pitch window: PERSISTENT, expand-only. Adding/removing notes never recenters or zooms
+      // the view (tapping the first note of a blank pattern used to snap the fit to that note).
+      // It only grows when a note lands outside, keeping a 24-row minimum, clamped to 0..127.
+      int noteLo = 127, noteHi = 0;
       bool anyNote = false;
       if (const auto it = pattern->notes.find(channel->id); it != pattern->notes.end())
-        for (const Note& n : it->second) { lo = std::min(lo, n.pitch); hi = std::max(hi, n.pitch); anyNote = true; }
-      if (!anyNote) {
-        lo = 48; hi = 83;
-      } else {
-        lo = std::max(0, lo - 6); hi = std::min(127, hi + 6);
+        for (const Note& n : it->second) { noteLo = std::min(noteLo, n.pitch); noteHi = std::max(noteHi, n.pitch); anyNote = true; }
+      if (anyNote) {
+        const int needLo = std::max(0, noteLo - 6), needHi = std::min(127, noteHi + 6);
+        if (needLo < st.rollLo) st.rollLo = needLo;
+        if (needHi > st.rollHi) st.rollHi = needHi;
       }
-      lo += st.rollPitchShift; hi += st.rollPitchShift;
-      if (lo < 0) { hi = std::min(127, hi - lo); lo = 0; }
-      if (hi > 127) { lo = std::max(0, lo - (hi - 127)); hi = 127; }
-      if (hi - lo < 23) hi = std::min(127, lo + 23);
+      if (st.rollHi - st.rollLo < 23) st.rollHi = std::min(127, st.rollLo + 23);
+      if (st.rollHi - st.rollLo < 23) st.rollLo = std::max(0, st.rollHi - 23);
+      st.rollHi = std::min(127, std::max(st.rollHi, 23));
+      st.rollLo = std::max(0, std::min(st.rollLo, 104));
+      const int lo = st.rollLo, hi = st.rollHi;
       const int rows = hi - lo + 1;
 
       const float legendH = 46.0f * s;
@@ -503,8 +506,15 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
           dl->AddLine(ImVec2(gridMin.x + gutter, y1), ImVec2(gridMin.x + gridW, y1), IM_COL32(255, 255, 255, 10));
         }
       }
-      // beat separators at beat cadence for the active snap (2 / 4 / 8 columns)
+      // faint column separators at the active snap cadence (1/16 spacing at the default), so the
+      // grid reads as 1/16 and not just the strong beat lines
       const int beatEvery = std::max(1, static_cast<int>(song.beatTicks() / cellTicks));
+      for (int i = 1; i < cols; ++i) {
+        if (i % beatEvery == 0) continue;  // beat cadence is drawn below, stronger
+        const float x = gridMin.x + gutter + static_cast<float>(i) * (cellW + gap) - gap * 0.5f;
+        dl->AddLine(ImVec2(x, gridMin.y), ImVec2(x, gridMin.y + gridH), IM_COL32(255, 255, 255, 12));
+      }
+      // beat separators at beat cadence for the active snap (2 / 4 / 8 columns)
       for (int i = 0; i <= cols; i += beatEvery) {
         const float x = gridMin.x + gutter + static_cast<float>(i) * (cellW + gap) - gap * 0.5f;
         dl->AddRectFilled(ImVec2(x - 1.0f, gridMin.y), ImVec2(x + 1.0f, gridMin.y + gridH), IM_COL32(255, 255, 255, 34));
@@ -598,7 +608,11 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
         ImGuiIO& io = ImGui::GetIO();
         const float wheel = io.MouseWheel;
         if (wheel != 0.0f) {
-          st.rollPitchShift = std::max(-48, std::min(48, st.rollPitchShift + static_cast<int>(std::lround(wheel)) * 12));
+          const int dir = static_cast<int>(std::lround(wheel));
+          int nlo = st.rollLo + dir * 12, nhi = st.rollHi + dir * 12;
+          if (nlo < 0) { nhi -= nlo; nlo = 0; }
+          if (nhi > 127) { nlo -= (nhi - 127); nhi = 127; }
+          st.rollLo = std::max(0, nlo); st.rollHi = std::min(127, nhi);
           io.MouseWheel = 0.0f;
         }
       }
@@ -639,9 +653,13 @@ bool rackDraw(RackState& st, gl::Document& doc, gl::AudioEngine& engine, gl::Pro
         if (idx < 2) ImGui::SameLine();
       }
       ImGui::NewLine();  // Snap row done; 8va row starts on the next line
-      if (ImGui::Button("- 8va", ImVec2(56.0f * s, 26.0f * s))) st.rollPitchShift = std::max(-48, st.rollPitchShift - 12);
+      if (ImGui::Button("- 8va", ImVec2(56.0f * s, 26.0f * s))) {
+        if (st.rollLo - 12 >= 0) { st.rollLo -= 12; st.rollHi -= 12; } else { st.rollHi -= st.rollLo; st.rollLo = 0; }
+      }
       ImGui::SameLine();
-      if (ImGui::Button("+ 8va", ImVec2(56.0f * s, 26.0f * s))) st.rollPitchShift = std::min(48, st.rollPitchShift + 12);
+      if (ImGui::Button("+ 8va", ImVec2(56.0f * s, 26.0f * s))) {
+        if (st.rollHi + 12 <= 127) { st.rollLo += 12; st.rollHi += 12; } else { st.rollLo += 127 - st.rollHi; st.rollHi = 127; }
+      }
       ImGui::SameLine();
       ImGui::PushStyleColor(ImGuiCol_Text, dim);
       ImGui::TextUnformatted("wheel = octave");
