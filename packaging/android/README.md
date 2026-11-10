@@ -1,10 +1,11 @@
 # Gridline for Android
 
-Status: **phase 2 — table stakes audio** (SDL2's Android audio backend drives the real
-`AudioEngine`: PLAY/STOP plays the embedded demo song). The app boots SDL2, creates an ES 3
-context, renders ImGui frames and opens an AAudio-or-OpenSL-ES output device. Touch works as
-a mouse. Phase 1 is verified on a real tablet by the project owner (debug APK built by CI).
-Phase 0 (below) is done.
+Status: **phase 4 (channel rack, milestone 1) — CI build, not yet tablet-tested** (SDL2's
+Android audio backend drives the real `AudioEngine`; the channel rack is the app's screen).
+Phases 1–2 are tablet-tested; the demo song renders and PLAY makes sound, but playback was
+reported "not good at all" on the first tablet test (audio work deferred, see the phase-2
+notes). The app boots SDL2, creates an ES 3 context, renders ImGui frames and opens an
+AAudio-or-OpenSL-ES output device. Touch works as a mouse. Phase 0 (below) is done.
 
 What phase 2 added on top of phase 1:
 
@@ -25,6 +26,33 @@ What phase 2 added on top of phase 1:
   nothing uses only invites Play review questions. It arrives with the capture path.
 - Reset reloads the demo song and rebuilds the program. Audio focus and
   background/foreground lifecycle remain phase 5.
+
+What phase 4 (milestone 1) adds — **the channel rack** (`android_rack.cpp` / `android_rack.h`):
+
+- A tablet-first, purpose-built rack (not a port of the desktop UI). Top bar: pattern
+  prev/next + a picker (65 patterns in the demo song) and a PAT/SONG transport-mode toggle;
+  left column: all 23 channels (colour chip, name, mute, solo); right: the selected channel.
+- The detail view shows gain (0..1.25) and pan (-1..+1) as live sliders, larger mute/solo
+  buttons, and a **16-step note grid** for the selected pattern (with a bar switcher for
+  multi-bar patterns). Every cell is a toggle: empty → adds a C5 note, occupied (one or more
+  notes overlapping the step) → removes those notes. A playhead line tracks Pattern-mode
+  playback across the visible bar.
+- Editing is live and in-memory only: every change is an undoable `gl::Document` edit; the
+  engine program is rebuilt when the document revision moves (the same contract the desktop
+  uses). Undo/redo buttons in the transport bar. Nothing is written to a file; the demo song
+  is reloaded by Reset. Solo is FL-style: it mutes every other channel in one edit step and
+  restores the pre-solo mute mix when toggled again (the channel model has no solo flag).
+- Default transport mode is now **Pattern** (the rack's editing context); SONG plays the full
+  playlist arrangement as before.
+- Step cells show the pitch of single-pitch cells (`+` for mixed); new notes are C5. There is
+  no velocity painting, drag-paint, or per-note pane yet — those are the next milestones.
+- Touch scroll: `ImGuiConfigFlags_IsTouchScreen` is enabled so finger-drag scrolls the
+  channel list. `RECORD_AUDIO` is still deliberately absent (no capture path yet).
+- Honest limits: the demo song's patterns are note-based (no drum step rows), so toggling a
+  cell on a percussion channel adds a C5 melodic note — audible but not idiomatic drumming.
+  Solo semantics are "mute everyone else"; they do not survive a Reset and are not saved.
+  Whether the rack *feels* right on glass has not been verified on a device yet — CI only.
+  versionCode was bumped 3 → 4 so this APK can sideload over the phase-2 install.
 
 What phase 1 added: the phase-0 plain `Activity` + JNI probe was replaced by
 `MainActivity : SDLActivity`. `libmain.so` (this is Gridline's process) links SDL2,
@@ -65,7 +93,9 @@ packaging/android/
 │       ├── java/com/lolitemaultes/gridline/MainActivity.java   extends SDLActivity (no overrides)
 │       ├── java/org/libsdl/app/                                vendored SDL 2.30.9 Android bindings (see README.gridline.md)
 │       ├── cpp/CMakeLists.txt       FetchContent SDL2 + add_subdirectory of the repo root + imgui ES 3
-│       ├── cpp/android_main.cpp     the phase-2 screen (grid + card + transport; engine audio)
+│       ├── cpp/android_main.cpp     entry point (SDL2 + ES 3 + ImGui, engine audio, transport)
+│       ├── cpp/android_rack.cpp     the channel rack screen (phase 4 milestone 1)
+│       └── cpp/android_rack.h       its state + entry points
 │       └── res/                     launcher icons from assets/icons/gridline-app-*.png
 ```
 
@@ -90,8 +120,9 @@ libs, the wrapper's `main` module and the SDL2 module). The vendored SDL2 Java s
 **Phase 2** — the engine is now built into the app: `gl::AudioEngine` + `ProgramBuilder`
 (both inside `gridline_core`) render the embedded demo song through SDL's Android audio
 backend; `android_main.cpp` opens the output device (F32 stereo, 48 kHz requested, buffer
-negotiated), and PLAY/STOP drive the transport in Song mode. See the control list and the
-CI-built debug APK to hear it — it is **not yet device-verified** at the time of writing.
+negotiated), and PLAY/STOP drive the transport in Song mode. **Known bad on the first tablet
+test (2026-11-10): playback was reported "not good at all" (buffer/threads mitigations did
+not satisfy the tester); audio quality work is deferred and phase work continues with the UI.
 
 - **On a device** — the debug APK built by CI (`:app:assembleDebug`, artifact
   `gridline-android-debug`) was sideloaded and confirmed working on a tablet (2026-11-09): the

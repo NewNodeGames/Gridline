@@ -53,7 +53,7 @@ target_link_libraries(gridline_imgui_es PUBLIC SDL2::SDL2)
 set_target_properties(gridline_imgui_es PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ---- libmain.so — the application ----
-add_library(main SHARED android_main.cpp)
+add_library(main SHARED android_main.cpp android_rack.cpp)
 target_compile_features(main PRIVATE cxx_std_17)
 target_link_libraries(main PRIVATE gridline_imgui_es gridline_core
                                   SDL2::SDL2 EGL GLESv3 android log)

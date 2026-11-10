@@ -1,4 +1,4 @@
-// Gridline — Android UI entry point (phase 2): SDL2 + OpenGL ES 3 + Dear ImGui, with engine audio.
+// Gridline — Android UI entry point: SDL2 + OpenGL ES 3 + Dear ImGui, with engine audio.
 //
 // Boot flow: MainActivity (org.libsdl.app.SDLActivity subclass) loads libSDL2.so, then this
 // library (libmain.so), and runs the app on a dedicated native thread started by SDLActivity
@@ -6,13 +6,15 @@
 // SDL_HINT_TOUCH_MOUSE_EVENTS, so every mouse-driven ImGui control responds to a finger tap
 // or drag. The back button is not trapped: Android sends SDL_QUIT and the app exits cleanly.
 //
-// Phase 2: the AudioEngine (the same realtime engine the desktop app drives) renders the
-// embedded demo song — "Gridline", all built-in instruments, no samples — through SDL's
-// Android audio backend (AAudio on API 26+, OpenSL ES otherwise) into AAudio; PLAY/STOP run
-// the transport in Song mode. RECORD_AUDIO is deliberately NOT declared yet: there is no
-// capture path in this skeleton, and an unused permission only invites Play review questions.
-// Output latency is reported as the negotiated buffer (SDL does not expose the device-side
-// AAudio latency). Audio focus and background/foreground lifecycle are phase 5.
+// Phase 2 engine audio + phase 4 channel rack. The AudioEngine (the same realtime engine the
+// desktop app drives) renders the embedded demo song — "Gridline", all built-in instruments,
+// no samples — through SDL's Android audio backend (AAudio on API 26+, OpenSL ES otherwise).
+// android_rack.cpp draws the channel rack (phase-4 milestone 1): live mute/solo/gain/pan,
+// a 16-step note grid per channel for the selected pattern, PAT/SONG transport, undo/redo.
+// RECORD_AUDIO is deliberately NOT declared yet: there is no capture path in this skeleton,
+// and an unused permission only invites Play review questions. Output latency is reported as
+// the negotiated buffer (SDL does not expose the device-side AAudio latency). Audio focus
+// and background/foreground lifecycle are phase 5.
 #include <SDL.h>
 
 #include <algorithm>
@@ -27,11 +29,12 @@
 #include <GLES3/gl3.h>
 #endif
 
-#include "GridlineVersion.h"
 #include "core/Song.h"
 #include "core/Demo.h"
+#include "core/Document.h"
 #include "engine/AudioEngine.h"
 #include "engine/Program.h"
+#include "android_rack.h"
 
 namespace {
 
@@ -105,6 +108,7 @@ int main(int /* argc */, char** /* argv */) {
   ImGuiIO& io = ImGui::GetIO();
   io.FontGlobalScale = scale;
   io.IniFilename = nullptr;  // no desktop-style config files on Android
+  io.ConfigFlags |= ImGuiConfigFlags_IsTouchScreen;  // finger-drag scrolling in list views
   ImGui::StyleColorsDark();
   ImGuiStyle& style = ImGui::GetStyle();
   style.ScaleAllSizes(scale);   // spacing/padding/thickness; fonts scale via FontGlobalScale
@@ -114,10 +118,14 @@ int main(int /* argc */, char** /* argv */) {
   ImGui_ImplSDL2_InitForOpenGL(window, gl);
   ImGui_ImplOpenGL3_Init("#version 300 es");
 
-  // ---- phase 2: the engine and its Android audio device ----
-  // Live engine state — the demo song ("Gridline", embedded in gridline_core; all built-in
-  // instruments), so PLAY makes sound with nothing but the binary.
-  gl::Song song = gl::makeDemoTrack();
+  // ---- phase 2 + phase 4: the engine and its Android audio device, driving the channel rack ----
+  // The live rack edits an in-memory gl::Document (the demo song "Gridline", all built-in
+  // instruments, no samples); PLAY runs the selected pattern / the playlist arrangement through
+  // SDL's Android audio backend into AAudio. RECORD_AUDIO is deliberately NOT declared yet:
+  // there is no capture path in this skeleton, and an unused permission only invites Play
+  // review questions. Output latency is reported as the negotiated buffer (SDL does not expose
+  // the device-side AAudio latency). Audio focus and background/foreground lifecycle are phase 5.
+  gl::Document doc(gl::makeDemoTrack());
   gl::AudioEngine engine(48000.0);
   // The desktop auto-selects half the hardware threads (Settings audio.threads = 0); the
   // engine's own default is one, which underruns a full demo arrangement on tablet cores.
@@ -145,8 +153,8 @@ int main(int /* argc */, char** /* argv */) {
       engine.setSampleRate(static_cast<double>(have.freq));
       builder.setSampleRate(engine.sampleRate());
       builder.setAsyncSamples(true);  // renders land while the demo is built; no samples needed here
-      engine.setMode(gl::PlayMode::Song);  // play the playlist arrangement
-      engine.setProgram(builder.build(song));
+      engine.setMode(gl::PlayMode::Pattern);  // the rack's editing context; toggle PAT/SONG up top
+      engine.setProgram(builder.build(doc.song()));
       const char* driver = SDL_GetCurrentAudioDriver();
       std::snprintf(audioStatus, sizeof audioStatus, "%s · %d Hz · %d-frame buffer (%.1f ms)",
                     driver ? driver : "audio", have.freq, have.samples,
@@ -156,13 +164,9 @@ int main(int /* argc */, char** /* argv */) {
     }
   }
   const bool audioOk = audioDevice != 0;
-  auto rebuild = [&]() {  // tempo edit committed: rebuild; the engine continues from the current position
-    if (!audioOk) return;
-    engine.setProgram(builder.build(song));
-  };
+  gl::android::RackState rackState;
+  gl::android::rackInit(doc, engine, rackState);  // Pattern mode, first pattern selected
 
-  float tempoUi = static_cast<float>(song.tempo);
-  float tempoCommitted = tempoUi;
   bool running = true;
 
   while (running) {
@@ -179,76 +183,7 @@ int main(int /* argc */, char** /* argv */) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     drawGridBackground(display);
 
-    const ImVec4 accent{0.36f, 0.66f, 0.90f, 1.0f};
-    const ImVec4 dim{0.60f, 0.60f, 0.62f, 1.0f};
-    const ImVec4 warn{0.91f, 0.52f, 0.36f, 1.0f};
-    const bool playing = engine.playing();
-
-    // ---- central card ----
-    const float cardW = std::min(display.x * 0.82f, 760.0f * scale);
-    ImGui::SetNextWindowPos(ImVec2((display.x - cardW) * 0.5f, display.y * 0.30f), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(cardW, 0.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.92f);
-    ImGui::Begin("##gridline", nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
-
-    ImGui::PushStyleColor(ImGuiCol_Text, accent);
-    ImGui::TextUnformatted("G R I D L I N E");
-    ImGui::PopStyleColor();
-    ImGui::PushStyleColor(ImGuiCol_Text, dim);
-    ImGui::TextUnformatted("the workstation built around the grid");
-    ImGui::TextUnformatted("android  ·  phase 2 — engine audio");
-    ImGui::PopStyleColor();
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    ImGui::Text("gridline_core %s  ·  build %s", GRIDLINE_VERSION, GRIDLINE_BUILD_ID);
-    ImGui::Text("demo song: Gridline · %.1f BPM · PPQ %d · %d/%d", song.tempo, song.ppq, song.timeSigNum,
-                song.timeSigDen);
-    ImGui::PushStyleColor(ImGuiCol_Text, audioOk ? dim : warn);
-    ImGui::TextUnformatted(audioStatus);
-    ImGui::PopStyleColor();
-    ImGui::Spacing();
-
-    // Transport row: PLAY/STOP runs the demo through SDL's AAudio/OpenSL ES path.
-    ImGui::PushStyleColor(ImGuiCol_Button, playing ? accent : ImVec4(0.20f, 0.20f, 0.22f, 1.0f));
-    if (ImGui::Button(playing ? "STOP" : "PLAY", ImVec2(-1.0f, 56.0f))) engine.togglePlay();
-    ImGui::PopStyleColor();
-    ImGui::Spacing();
-
-    // Tempo: edited live in the slider, committed to the engine on release (a tempo change is
-    // a new tempo map; the audio thread keeps its position).
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::SliderFloat("##tempo", &tempoUi, 60.0f, 220.0f, "Tempo %.1f BPM");
-    if (ImGui::IsItemDeactivatedAfterEdit() && tempoCommitted != tempoUi) {
-      tempoCommitted = tempoUi;
-      song.tempo = static_cast<double>(tempoUi);
-      rebuild();
-    }
-    ImGui::Spacing();
-
-    if (ImGui::Button("Reset song", ImVec2(-1.0f, 0.0f))) {
-      engine.stopToStart();
-      song = gl::makeDemoTrack();
-      tempoUi = static_cast<float>(song.tempo);
-      tempoCommitted = tempoUi;
-      rebuild();
-    }
-    ImGui::Spacing();
-    if (ImGui::Button("Quit", ImVec2(-1.0f, 44.0f))) running = false;
-    ImGui::End();
-
-    // ---- bottom-right stats ----
-    ImGui::SetNextWindowPos(ImVec2(display.x - 10.0f, display.y - 10.0f), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
-    ImGui::Begin("##stats", nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoBackground |
-                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
-    ImGui::PushStyleColor(ImGuiCol_Text, dim);
-    ImGui::Text("%.0f FPS", ImGui::GetIO().Framerate);
-    ImGui::PopStyleColor();
-    ImGui::End();
+    if (gl::android::rackDraw(rackState, doc, engine, builder, audioStatus, audioOk, scale, display)) running = false;
 
     ImGui::Render();
     int w = 0, h = 0;
