@@ -1,6 +1,6 @@
 # Gridline for Android
 
-Status: **phase 4 (channel rack, milestone 4: roll fixes — CI build, not yet device-tested)** (starter-song playback verified smooth on a tablet 2026-11-10; DEL verified working on a tablet 2026-11-10; wheel octave jump, snap selector and drag-resize verified working on a tablet 2026-11-10; the persistent expand-only pitch window and 1/16 column lines are untested on device). SDL2's
+Status: **phase 4 (channel rack, milestone 5: 24-row default window — CI build, not yet device-tested)** (starter-song playback verified smooth on a tablet 2026-11-10; DEL verified working on a tablet 2026-11-10; wheel octave jump, snap selector and drag-resize verified working on a tablet 2026-11-10; milestone 4's 36-row default window was reported too dense to edit on a tablet and was replaced by a 24-row default in milestone 5; the persistent expand-only behavior and 1/16 column lines are untested on device). SDL2's
 Android audio backend drives the real `AudioEngine`; the channel rack is the app's screen).
 Phases 1–2 are tablet-tested; the demo song renders and PLAY makes sound, but playback was
 reported "not good at all" on the first tablet test, and the field tests then showed the demo
@@ -75,7 +75,8 @@ What phase 4 (milestone 1) adds — **the channel rack** (`android_rack.cpp` / `
 - **Milestone 4 (roll fixes):** the pitch window is **persistent and expand-only** — adding or
   removing notes never re-fits, recenters or zooms the view (the first tap on a blank pattern
   used to snap the window to that note); it only grows when a note lands outside, keeping a
-  24-row minimum and the 0..127 clamp. The **−8va / +8va** buttons and the mouse wheel move
+  24-row minimum and the 0..127 clamp. The default window is 24 rows (48..71) after the first
+  36-row default proved too dense to edit on a tablet. The **−8va / +8va** buttons and the mouse wheel move
   this window directly. Faint **column lines at the snap cadence** (every 1/16 at the default)
   are drawn under the strong beat lines, so the grid reads as 1/16.
 - **Delete channel (milestone 2):** the **DEL** button in the detail panel deletes the

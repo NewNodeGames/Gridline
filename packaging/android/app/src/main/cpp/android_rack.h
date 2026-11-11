@@ -36,7 +36,7 @@ struct RackState {
   ObjectId soloOwner = kNoId;
   std::vector<std::pair<ObjectId, bool>> soloPrior;  // channel id -> muted before solo
   int detailMode = 0;   // 0 = step grid (16 steps/bar), 1 = piano roll (per-pitch cells)
-  int rollLo = 48, rollHi = 83;  // persistent visible pitch window (expand-only, wheel / 8va buttons move it)
+  int rollLo = 48, rollHi = 71;  // persistent visible pitch window (expand-only, wheel / 8va buttons move it); 24 rows by default
   int rollGrid = 1;        // roll snap: 0 = 1/8, 1 = 1/16 (default), 2 = 1/32 — notes place/resize on snap ticks
   // Resize gesture: press and drag the right edge of a note (in its row) to change its length.
   // Valid between the press that grabs a note edge and the release that ends the drag.

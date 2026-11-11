@@ -14,8 +14,10 @@ itself is not yet device-verified; milestone 2 adds a piano roll and delete-chan
 milestone 3 (device-verified on a tablet 2026-11-10) adds roll depth — mouse-wheel octave jump,
 a 1/8/1/16/1/32 snap selector, drag-to-resize notes — and fixes the DEL confirm, which never
 appeared because it was rendered in a different ImGui window than its opener; milestone 4
-(CI build, not device-tested) makes the pitch window persistent and expand-only (no re-fit on
-note add) and draws faint 1/16-cadence column lines. See the README in `packaging/android/` for
+(CI build, not device-tested) made the pitch window persistent and expand-only (no re-fit on
+note add) and draws faint 1/16-cadence column lines; milestone 5 (CI build, not device-tested)
+defaults the pitch window to 24 rows after the 36-row default was reported too dense on a
+tablet. See the README in `packaging/android/` for
 status, build instructions and the phase plan.
 
 Desktop features that will not come to Android in their desktop form: external plugin
